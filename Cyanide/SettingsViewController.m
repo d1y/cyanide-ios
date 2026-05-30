@@ -4977,12 +4977,634 @@ static NSString *settings_pretty_date_for_iso(NSString *iso)
     return date ? [out stringFromDate:date] : iso;
 }
 
-@interface SettingsViewController () <UIDocumentPickerDelegate>
+static BOOL livewp_url_has_video_extension(NSURL *url)
+{
+    NSString *ext = url.pathExtension.lowercaseString ?: @"";
+    return [@[@"mp4", @"mov", @"m4v"] containsObject:ext];
+}
+
+static BOOL livewp_response_is_video_download(NSURLResponse *response)
+{
+    if (!response) return NO;
+    if (livewp_url_has_video_extension(response.URL)) return YES;
+
+    NSString *mime = response.MIMEType.lowercaseString ?: @"";
+    if ([mime hasPrefix:@"video/"]) return YES;
+
+    if (![response isKindOfClass:NSHTTPURLResponse.class]) return NO;
+    NSDictionary *headers = ((NSHTTPURLResponse *)response).allHeaderFields;
+    NSString *disposition = @"";
+    for (id key in headers) {
+        if ([[key description].lowercaseString isEqualToString:@"content-disposition"]) {
+            disposition = [headers[key] description].lowercaseString;
+            break;
+        }
+    }
+    if (![disposition containsString:@"attachment"]) return NO;
+    return [disposition containsString:@".mp4"] ||
+           [disposition containsString:@".mov"] ||
+           [disposition containsString:@".m4v"] ||
+           [mime isEqualToString:@"application/octet-stream"];
+}
+
+@interface CyanideLiveWPDownloadProgressViewController : UIViewController
+@property (nonatomic, strong) UILabel *statusLabel;
+@property (nonatomic, strong) UILabel *progressLabel;
+@property (nonatomic, strong) UILabel *percentLabel;
+@property (nonatomic, strong) UIView *progressTrackView;
+@property (nonatomic, strong) UIView *progressFillView;
+@property (nonatomic, strong) NSLayoutConstraint *progressFillWidthConstraint;
+@property (nonatomic, strong) UIActivityIndicatorView *activityView;
+@property (nonatomic, strong) UIView *cardShadowView;
+@property (nonatomic, strong) UIVisualEffectView *cardView;
+@property (nonatomic, copy) void (^cancelHandler)(void);
+- (void)updateWithReceivedBytes:(int64_t)received expectedBytes:(int64_t)expected host:(NSString *)host;
+@end
+
+@implementation CyanideLiveWPDownloadProgressViewController
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.view.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.14];
+
+    self.cardShadowView = [[UIView alloc] init];
+    self.cardShadowView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.cardShadowView.backgroundColor = UIColor.clearColor;
+    self.cardShadowView.layer.shadowColor = UIColor.blackColor.CGColor;
+    self.cardShadowView.layer.shadowOpacity = 0.20;
+    self.cardShadowView.layer.shadowRadius = 28.0;
+    self.cardShadowView.layer.shadowOffset = CGSizeMake(0, 14.0);
+    [self.view addSubview:self.cardShadowView];
+
+    self.cardView = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterial]];
+    self.cardView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.cardView.layer.cornerRadius = 26.0;
+    self.cardView.layer.cornerCurve = kCACornerCurveContinuous;
+    self.cardView.clipsToBounds = YES;
+    [self.cardShadowView addSubview:self.cardView];
+
+    UIView *content = self.cardView.contentView;
+
+    UIView *iconPlate = [[UIView alloc] init];
+    iconPlate.translatesAutoresizingMaskIntoConstraints = NO;
+    iconPlate.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.13];
+    iconPlate.layer.cornerRadius = 22.0;
+    iconPlate.layer.cornerCurve = kCACornerCurveContinuous;
+    [content addSubview:iconPlate];
+
+    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"arrow.down.circle.fill"]];
+    icon.translatesAutoresizingMaskIntoConstraints = NO;
+    icon.tintColor = UIColor.systemBlueColor;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    [iconPlate addSubview:icon];
+
+    self.activityView = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    self.activityView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.activityView.hidesWhenStopped = YES;
+    [self.activityView startAnimating];
+    [content addSubview:self.activityView];
+
+    UILabel *titleLabel = [[UILabel alloc] init];
+    titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    titleLabel.text = @"Downloading Video";
+    titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+    titleLabel.textColor = UIColor.labelColor;
+    [content addSubview:titleLabel];
+
+    self.statusLabel = [[UILabel alloc] init];
+    self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.statusLabel.text = @"Starting...";
+    self.statusLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightMedium];
+    self.statusLabel.textColor = UIColor.secondaryLabelColor;
+    self.statusLabel.numberOfLines = 2;
+    [content addSubview:self.statusLabel];
+
+    self.progressTrackView = [[UIView alloc] init];
+    self.progressTrackView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.progressTrackView.backgroundColor = UIColor.quaternarySystemFillColor;
+    self.progressTrackView.layer.cornerRadius = 3.0;
+    self.progressTrackView.layer.cornerCurve = kCACornerCurveContinuous;
+    self.progressTrackView.clipsToBounds = YES;
+    self.progressTrackView.hidden = YES;
+    [content addSubview:self.progressTrackView];
+
+    self.progressFillView = [[UIView alloc] init];
+    self.progressFillView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.progressFillView.backgroundColor = UIColor.systemBlueColor;
+    self.progressFillView.layer.cornerRadius = 3.0;
+    self.progressFillView.layer.cornerCurve = kCACornerCurveContinuous;
+    self.progressFillView.hidden = YES;
+    [self.progressTrackView addSubview:self.progressFillView];
+
+    self.progressLabel = [[UILabel alloc] init];
+    self.progressLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.progressLabel.text = @"";
+    self.progressLabel.textColor = UIColor.secondaryLabelColor;
+    self.progressLabel.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightMedium];
+    self.progressLabel.textAlignment = NSTextAlignmentLeft;
+    self.progressLabel.hidden = YES;
+    [content addSubview:self.progressLabel];
+
+    self.percentLabel = [[UILabel alloc] init];
+    self.percentLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.percentLabel.text = @"";
+    self.percentLabel.textColor = UIColor.secondaryLabelColor;
+    self.percentLabel.font = [UIFont monospacedDigitSystemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    self.percentLabel.textAlignment = NSTextAlignmentRight;
+    self.percentLabel.hidden = YES;
+    [content addSubview:self.percentLabel];
+
+    UIButton *cancel = [UIButton buttonWithType:UIButtonTypeSystem];
+    cancel.translatesAutoresizingMaskIntoConstraints = NO;
+    UIButtonConfiguration *config = [UIButtonConfiguration plainButtonConfiguration];
+    config.title = @"Cancel";
+    config.baseForegroundColor = UIColor.systemRedColor;
+    config.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+    config.contentInsets = NSDirectionalEdgeInsetsMake(10.0, 14.0, 10.0, 14.0);
+    cancel.configuration = config;
+    cancel.titleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightSemibold];
+    [cancel addTarget:self action:@selector(cancelTapped) forControlEvents:UIControlEventTouchUpInside];
+    [content addSubview:cancel];
+
+    self.progressFillWidthConstraint = [self.progressFillView.widthAnchor constraintEqualToConstant:0.0];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.cardShadowView.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [self.cardShadowView.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [self.cardShadowView.widthAnchor constraintLessThanOrEqualToConstant:332.0],
+        [self.cardShadowView.widthAnchor constraintEqualToAnchor:self.view.widthAnchor multiplier:0.84],
+
+        [self.cardView.leadingAnchor constraintEqualToAnchor:self.cardShadowView.leadingAnchor],
+        [self.cardView.trailingAnchor constraintEqualToAnchor:self.cardShadowView.trailingAnchor],
+        [self.cardView.topAnchor constraintEqualToAnchor:self.cardShadowView.topAnchor],
+        [self.cardView.bottomAnchor constraintEqualToAnchor:self.cardShadowView.bottomAnchor],
+
+        [iconPlate.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:22.0],
+        [iconPlate.topAnchor constraintEqualToAnchor:content.topAnchor constant:22.0],
+        [iconPlate.widthAnchor constraintEqualToConstant:44.0],
+        [iconPlate.heightAnchor constraintEqualToConstant:44.0],
+
+        [icon.centerXAnchor constraintEqualToAnchor:iconPlate.centerXAnchor],
+        [icon.centerYAnchor constraintEqualToAnchor:iconPlate.centerYAnchor],
+        [icon.widthAnchor constraintEqualToConstant:25.0],
+        [icon.heightAnchor constraintEqualToConstant:25.0],
+
+        [self.activityView.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-22.0],
+        [self.activityView.centerYAnchor constraintEqualToAnchor:iconPlate.centerYAnchor],
+
+        [titleLabel.leadingAnchor constraintEqualToAnchor:iconPlate.trailingAnchor constant:14.0],
+        [titleLabel.trailingAnchor constraintEqualToAnchor:self.activityView.leadingAnchor constant:-12.0],
+        [titleLabel.topAnchor constraintEqualToAnchor:iconPlate.topAnchor constant:1.0],
+
+        [self.statusLabel.leadingAnchor constraintEqualToAnchor:titleLabel.leadingAnchor],
+        [self.statusLabel.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-22.0],
+        [self.statusLabel.topAnchor constraintEqualToAnchor:titleLabel.bottomAnchor constant:3.0],
+
+        [self.progressTrackView.topAnchor constraintEqualToAnchor:iconPlate.bottomAnchor constant:22.0],
+        [self.progressTrackView.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:22.0],
+        [self.progressTrackView.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-22.0],
+        [self.progressTrackView.heightAnchor constraintEqualToConstant:6.0],
+
+        [self.progressFillView.leadingAnchor constraintEqualToAnchor:self.progressTrackView.leadingAnchor],
+        [self.progressFillView.topAnchor constraintEqualToAnchor:self.progressTrackView.topAnchor],
+        [self.progressFillView.bottomAnchor constraintEqualToAnchor:self.progressTrackView.bottomAnchor],
+        self.progressFillWidthConstraint,
+
+        [self.progressLabel.topAnchor constraintEqualToAnchor:self.progressTrackView.bottomAnchor constant:10.0],
+        [self.progressLabel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:22.0],
+        [self.progressLabel.trailingAnchor constraintLessThanOrEqualToAnchor:self.percentLabel.leadingAnchor constant:-12.0],
+
+        [self.percentLabel.firstBaselineAnchor constraintEqualToAnchor:self.progressLabel.firstBaselineAnchor],
+        [self.percentLabel.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-22.0],
+        [self.percentLabel.widthAnchor constraintGreaterThanOrEqualToConstant:48.0],
+
+        [cancel.topAnchor constraintEqualToAnchor:self.progressLabel.bottomAnchor constant:16.0],
+        [cancel.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:22.0],
+        [cancel.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-22.0],
+        [cancel.heightAnchor constraintEqualToConstant:42.0],
+        [cancel.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-18.0],
+    ]];
+}
+
+- (void)cancelTapped
+{
+    if (self.cancelHandler) self.cancelHandler();
+}
+
+- (void)updateWithReceivedBytes:(int64_t)received expectedBytes:(int64_t)expected host:(NSString *)host
+{
+    if (expected > 0) {
+        [self.activityView stopAnimating];
+        self.progressTrackView.hidden = NO;
+        self.progressFillView.hidden = NO;
+        self.progressLabel.hidden = NO;
+        self.percentLabel.hidden = NO;
+        float progress = (float)MIN(1.0, MAX(0.0, (double)received / (double)expected));
+        self.statusLabel.text = @"Saving to LiveWP Downloads";
+        self.progressLabel.text = [NSString stringWithFormat:@"%@ of %@",
+                                   [NSByteCountFormatter stringFromByteCount:received countStyle:NSByteCountFormatterCountStyleFile],
+                                   [NSByteCountFormatter stringFromByteCount:expected countStyle:NSByteCountFormatterCountStyleFile]];
+        self.percentLabel.text = [NSString stringWithFormat:@"%.0f%%", progress * 100.0];
+        [self.view layoutIfNeeded];
+        CGFloat width = CGRectGetWidth(self.progressTrackView.bounds) * progress;
+        self.progressFillWidthConstraint.constant = width;
+        [UIView animateWithDuration:0.22 delay:0 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+            [self.progressTrackView layoutIfNeeded];
+        } completion:nil];
+    } else if (received <= 0) {
+        [self.activityView startAnimating];
+        self.progressTrackView.hidden = YES;
+        self.progressFillView.hidden = YES;
+        self.progressLabel.hidden = YES;
+        self.percentLabel.hidden = YES;
+        self.statusLabel.text = host.length ? [NSString stringWithFormat:@"Connecting to %@", host] : @"Preparing download";
+    } else {
+        [self.activityView startAnimating];
+        self.progressTrackView.hidden = YES;
+        self.progressFillView.hidden = YES;
+        self.progressLabel.hidden = NO;
+        self.percentLabel.hidden = YES;
+        self.statusLabel.text = @"Downloading";
+        self.progressLabel.text = [NSString stringWithFormat:@"%@ received",
+                                   [NSByteCountFormatter stringFromByteCount:received countStyle:NSByteCountFormatterCountStyleFile]];
+    }
+}
+
+@end
+
+@interface CyanideLiveWPBrowserViewController : UIViewController <WKNavigationDelegate, WKUIDelegate, UIAdaptivePresentationControllerDelegate>
+@property (nonatomic, copy) NSArray<NSDictionary<NSString *, NSString *> *> *catalogues;
+@property (nonatomic, assign) NSInteger selectedIndex;
+@property (nonatomic, strong) WKWebView *webView;
+@property (nonatomic, strong) UIView *toolbarView;
+@property (nonatomic, strong) UIScrollView *tabsScrollView;
+@property (nonatomic, strong) UIStackView *tabsStackView;
+@property (nonatomic, strong) NSMutableArray<UIButton *> *tabButtons;
+@property (nonatomic, strong) UIProgressView *loadProgressView;
+@property (nonatomic, copy) void (^downloadHandler)(NSURLRequest *request);
+@property (nonatomic, copy) void (^closeHandler)(void);
+@property (nonatomic, assign) BOOL didNotifyClose;
+- (instancetype)initWithCatalogues:(NSArray<NSDictionary<NSString *, NSString *> *> *)catalogues
+                      selectedIndex:(NSInteger)selectedIndex;
+@end
+
+@implementation CyanideLiveWPBrowserViewController
+
+- (instancetype)initWithCatalogues:(NSArray<NSDictionary<NSString *, NSString *> *> *)catalogues
+                      selectedIndex:(NSInteger)selectedIndex
+{
+    self = [super initWithNibName:nil bundle:nil];
+    if (!self) return nil;
+    _catalogues = [catalogues copy];
+    _selectedIndex = MAX(0, MIN((NSInteger)catalogues.count - 1, selectedIndex));
+    self.title = @"Online Video";
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.view.backgroundColor = UIColor.systemBackgroundColor;
+
+    self.toolbarView = [[UIView alloc] init];
+    self.toolbarView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.toolbarView.backgroundColor = UIColor.systemBackgroundColor;
+    [self.view addSubview:self.toolbarView];
+
+    UIButton *closeButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    closeButton.translatesAutoresizingMaskIntoConstraints = NO;
+    closeButton.tintColor = UIColor.labelColor;
+    closeButton.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    closeButton.layer.cornerRadius = 18.0;
+    closeButton.layer.cornerCurve = kCACornerCurveContinuous;
+    [closeButton setImage:[UIImage systemImageNamed:@"xmark"] forState:UIControlStateNormal];
+    [closeButton addTarget:self action:@selector(closeTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.toolbarView addSubview:closeButton];
+
+    UIButton *reloadButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    reloadButton.translatesAutoresizingMaskIntoConstraints = NO;
+    reloadButton.tintColor = UIColor.labelColor;
+    reloadButton.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    reloadButton.layer.cornerRadius = 18.0;
+    reloadButton.layer.cornerCurve = kCACornerCurveContinuous;
+    [reloadButton setImage:[UIImage systemImageNamed:@"arrow.clockwise"] forState:UIControlStateNormal];
+    [reloadButton addTarget:self action:@selector(reloadTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.toolbarView addSubview:reloadButton];
+
+    self.tabsScrollView = [[UIScrollView alloc] init];
+    self.tabsScrollView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.tabsScrollView.showsHorizontalScrollIndicator = NO;
+    self.tabsScrollView.alwaysBounceHorizontal = YES;
+    self.tabsScrollView.backgroundColor = UIColor.clearColor;
+    [self.toolbarView addSubview:self.tabsScrollView];
+
+    self.tabsStackView = [[UIStackView alloc] init];
+    self.tabsStackView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.tabsStackView.axis = UILayoutConstraintAxisHorizontal;
+    self.tabsStackView.alignment = UIStackViewAlignmentCenter;
+    self.tabsStackView.spacing = 8.0;
+    [self.tabsScrollView addSubview:self.tabsStackView];
+
+    self.tabButtons = [NSMutableArray array];
+    for (NSInteger i = 0; i < self.catalogues.count; i++) {
+        NSDictionary<NSString *, NSString *> *item = self.catalogues[i];
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+        button.translatesAutoresizingMaskIntoConstraints = NO;
+        button.tag = i;
+        button.contentEdgeInsets = UIEdgeInsetsMake(8.0, 14.0, 8.0, 14.0);
+        button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+        button.titleLabel.adjustsFontSizeToFitWidth = YES;
+        button.titleLabel.minimumScaleFactor = 0.82;
+        button.layer.cornerRadius = 16.0;
+        button.layer.cornerCurve = kCACornerCurveContinuous;
+        button.layer.borderWidth = 1.0;
+        [button setTitle:item[@"title"] ?: item[@"url"] ?: @"Source" forState:UIControlStateNormal];
+        [button addTarget:self action:@selector(sourceTabTapped:) forControlEvents:UIControlEventTouchUpInside];
+        [button.widthAnchor constraintLessThanOrEqualToConstant:178.0].active = YES;
+        [self.tabsStackView addArrangedSubview:button];
+        [self.tabButtons addObject:button];
+    }
+
+    WKWebViewConfiguration *config = [[WKWebViewConfiguration alloc] init];
+    config.allowsInlineMediaPlayback = YES;
+    self.webView = [[WKWebView alloc] initWithFrame:CGRectZero configuration:config];
+    self.webView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.webView.navigationDelegate = self;
+    self.webView.UIDelegate = self;
+    self.webView.allowsBackForwardNavigationGestures = YES;
+    [self.view addSubview:self.webView];
+
+    self.loadProgressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleBar];
+    self.loadProgressView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.loadProgressView.progress = 0.0;
+    self.loadProgressView.hidden = YES;
+    [self.view addSubview:self.loadProgressView];
+
+    UILayoutGuide *safe = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [self.toolbarView.topAnchor constraintEqualToAnchor:safe.topAnchor],
+        [self.toolbarView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.toolbarView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.toolbarView.heightAnchor constraintEqualToConstant:54.0],
+
+        [closeButton.leadingAnchor constraintEqualToAnchor:self.toolbarView.leadingAnchor constant:12.0],
+        [closeButton.centerYAnchor constraintEqualToAnchor:self.toolbarView.centerYAnchor],
+        [closeButton.widthAnchor constraintEqualToConstant:36.0],
+        [closeButton.heightAnchor constraintEqualToConstant:36.0],
+
+        [reloadButton.trailingAnchor constraintEqualToAnchor:self.toolbarView.trailingAnchor constant:-12.0],
+        [reloadButton.centerYAnchor constraintEqualToAnchor:self.toolbarView.centerYAnchor],
+        [reloadButton.widthAnchor constraintEqualToConstant:36.0],
+        [reloadButton.heightAnchor constraintEqualToConstant:36.0],
+
+        [self.tabsScrollView.leadingAnchor constraintEqualToAnchor:closeButton.trailingAnchor constant:10.0],
+        [self.tabsScrollView.trailingAnchor constraintEqualToAnchor:reloadButton.leadingAnchor constant:-10.0],
+        [self.tabsScrollView.topAnchor constraintEqualToAnchor:self.toolbarView.topAnchor],
+        [self.tabsScrollView.bottomAnchor constraintEqualToAnchor:self.toolbarView.bottomAnchor],
+
+        [self.tabsStackView.leadingAnchor constraintEqualToAnchor:self.tabsScrollView.contentLayoutGuide.leadingAnchor],
+        [self.tabsStackView.trailingAnchor constraintEqualToAnchor:self.tabsScrollView.contentLayoutGuide.trailingAnchor],
+        [self.tabsStackView.topAnchor constraintEqualToAnchor:self.tabsScrollView.contentLayoutGuide.topAnchor constant:9.0],
+        [self.tabsStackView.bottomAnchor constraintEqualToAnchor:self.tabsScrollView.contentLayoutGuide.bottomAnchor constant:-9.0],
+        [self.tabsStackView.heightAnchor constraintEqualToAnchor:self.tabsScrollView.frameLayoutGuide.heightAnchor constant:-18.0],
+
+        [self.loadProgressView.topAnchor constraintEqualToAnchor:self.toolbarView.bottomAnchor],
+        [self.loadProgressView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.loadProgressView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+
+        [self.webView.topAnchor constraintEqualToAnchor:self.loadProgressView.bottomAnchor],
+        [self.webView.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [self.webView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [self.webView.bottomAnchor constraintEqualToAnchor:self.view.bottomAnchor],
+    ]];
+
+    [self.webView addObserver:self forKeyPath:@"estimatedProgress" options:NSKeyValueObservingOptionNew context:NULL];
+    [self updateSourceTabs];
+    [self loadCatalogueAtIndex:self.selectedIndex];
+}
+
+- (void)viewWillAppear:(BOOL)animated
+{
+    [super viewWillAppear:animated];
+    self.presentationController.delegate = self;
+}
+
+- (void)viewDidDisappear:(BOOL)animated
+{
+    [super viewDidDisappear:animated];
+    if (self.isBeingDismissed || self.presentationController == nil) {
+        [self notifyCloseIfNeeded];
+    }
+}
+
+- (void)dealloc
+{
+    @try {
+        [self.webView removeObserver:self forKeyPath:@"estimatedProgress"];
+    } @catch (__unused NSException *exception) {
+    }
+}
+
+- (void)notifyCloseIfNeeded
+{
+    if (self.didNotifyClose) return;
+    self.didNotifyClose = YES;
+    if (self.closeHandler) self.closeHandler();
+}
+
+- (void)closeTapped
+{
+    [self notifyCloseIfNeeded];
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)presentationControllerDidDismiss:(UIPresentationController *)presentationController
+{
+    [self notifyCloseIfNeeded];
+}
+
+- (void)reloadTapped
+{
+    [self.webView reload];
+}
+
+- (void)sourceTabTapped:(UIButton *)button
+{
+    [self loadCatalogueAtIndex:button.tag];
+}
+
+- (void)loadCatalogueAtIndex:(NSInteger)index
+{
+    if (index < 0 || index >= (NSInteger)self.catalogues.count) return;
+    self.selectedIndex = index;
+    [self updateSourceTabs];
+
+    NSDictionary<NSString *, NSString *> *item = self.catalogues[index];
+    NSURL *url = [NSURL URLWithString:item[@"url"] ?: @""];
+    if (!url) return;
+    self.title = item[@"title"] ?: url.host ?: @"Online Video";
+    [self.webView loadRequest:[NSURLRequest requestWithURL:url]];
+}
+
+- (void)updateSourceTabs
+{
+    for (UIButton *button in self.tabButtons) {
+        BOOL selected = button.tag == self.selectedIndex;
+        button.backgroundColor = selected ? UIColor.labelColor : UIColor.secondarySystemBackgroundColor;
+        button.layer.borderColor = selected ? UIColor.labelColor.CGColor : [UIColor.separatorColor colorWithAlphaComponent:0.35].CGColor;
+        [button setTitleColor:(selected ? UIColor.systemBackgroundColor : UIColor.labelColor) forState:UIControlStateNormal];
+    }
+    if (self.selectedIndex >= 0 && self.selectedIndex < (NSInteger)self.tabButtons.count) {
+        UIButton *button = self.tabButtons[self.selectedIndex];
+        CGRect rect = [button convertRect:button.bounds toView:self.tabsScrollView];
+        [self.tabsScrollView scrollRectToVisible:CGRectInset(rect, -16.0, 0.0) animated:YES];
+    }
+}
+
+- (NSArray<NSHTTPCookie *> *)cookiesForURL:(NSURL *)url fromCookies:(NSArray<NSHTTPCookie *> *)cookies
+{
+    NSString *host = url.host.lowercaseString ?: @"";
+    NSString *path = url.path.length ? url.path : @"/";
+    NSMutableArray<NSHTTPCookie *> *matches = [NSMutableArray array];
+    for (NSHTTPCookie *cookie in cookies) {
+        NSString *domain = cookie.domain.lowercaseString ?: @"";
+        if ([domain hasPrefix:@"."]) domain = [domain substringFromIndex:1];
+        BOOL domainMatch = [host isEqualToString:domain] || [host hasSuffix:[@"." stringByAppendingString:domain]];
+        BOOL pathMatch = cookie.path.length == 0 || [path hasPrefix:cookie.path];
+        if (domainMatch && pathMatch) [matches addObject:cookie];
+    }
+    return matches;
+}
+
+- (NSMutableURLRequest *)nativeDownloadRequestFromRequest:(NSURLRequest *)request
+{
+    NSURL *url = request.URL;
+    NSMutableURLRequest *native = [request mutableCopy] ?: [NSMutableURLRequest requestWithURL:url];
+    native.URL = url;
+    native.HTTPMethod = @"GET";
+    native.HTTPBody = nil;
+    native.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    native.timeoutInterval = 30.0;
+
+    NSString *referer = self.webView.URL.absoluteString;
+    if (referer.length && ![native valueForHTTPHeaderField:@"Referer"]) {
+        [native setValue:referer forHTTPHeaderField:@"Referer"];
+    }
+    if (![native valueForHTTPHeaderField:@"User-Agent"]) {
+        [native setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+      forHTTPHeaderField:@"User-Agent"];
+    }
+    if (![native valueForHTTPHeaderField:@"Accept"]) {
+        [native setValue:@"video/*,*/*;q=0.8" forHTTPHeaderField:@"Accept"];
+    }
+    if (![native valueForHTTPHeaderField:@"Accept-Language"]) {
+        [native setValue:[NSLocale preferredLanguages].firstObject ?: @"en-US" forHTTPHeaderField:@"Accept-Language"];
+    }
+    return native;
+}
+
+- (void)beginNativeDownloadForRequest:(NSURLRequest *)request
+{
+    if (!request.URL || !self.downloadHandler) return;
+    NSMutableURLRequest *native = [self nativeDownloadRequestFromRequest:request];
+
+    WKHTTPCookieStore *store = self.webView.configuration.websiteDataStore.httpCookieStore;
+    __weak typeof(self) weakSelf = self;
+    [store getAllCookies:^(NSArray<NSHTTPCookie *> *cookies) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        if (![native valueForHTTPHeaderField:@"Cookie"]) {
+            NSArray<NSHTTPCookie *> *matches = [self cookiesForURL:native.URL fromCookies:cookies];
+            NSDictionary<NSString *, NSString *> *headers = [NSHTTPCookie requestHeaderFieldsWithCookies:matches];
+            NSString *cookieHeader = headers[@"Cookie"];
+            if (cookieHeader.length) [native setValue:cookieHeader forHTTPHeaderField:@"Cookie"];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.downloadHandler(native);
+        });
+    }];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey,id> *)change
+                       context:(void *)context
+{
+    if (object == self.webView && [keyPath isEqualToString:@"estimatedProgress"]) {
+        self.loadProgressView.hidden = self.webView.estimatedProgress >= 1.0;
+        [self.loadProgressView setProgress:(float)self.webView.estimatedProgress animated:YES];
+        return;
+    }
+    [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+}
+
+- (void)webView:(WKWebView *)webView
+decidePolicyForNavigationAction:(WKNavigationAction *)navigationAction
+decisionHandler:(void (^)(WKNavigationActionPolicy))decisionHandler
+{
+    NSURL *url = navigationAction.request.URL;
+    NSString *scheme = url.scheme.lowercaseString ?: @"";
+    if (![scheme isEqualToString:@"http"] && ![scheme isEqualToString:@"https"]) {
+        decisionHandler(WKNavigationActionPolicyCancel);
+        return;
+    }
+
+    if (livewp_url_has_video_extension(url)) {
+        [self beginNativeDownloadForRequest:navigationAction.request];
+        decisionHandler(WKNavigationActionPolicyCancel);
+        return;
+    }
+
+    if (!navigationAction.targetFrame) {
+        [webView loadRequest:navigationAction.request];
+        decisionHandler(WKNavigationActionPolicyCancel);
+        return;
+    }
+
+    decisionHandler(WKNavigationActionPolicyAllow);
+}
+
+- (void)webView:(WKWebView *)webView
+decidePolicyForNavigationResponse:(WKNavigationResponse *)navigationResponse
+decisionHandler:(void (^)(WKNavigationResponsePolicy))decisionHandler
+{
+    if (livewp_response_is_video_download(navigationResponse.response)) {
+        NSURL *url = navigationResponse.response.URL;
+        if (url) {
+            NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+            [self beginNativeDownloadForRequest:request];
+        }
+        decisionHandler(WKNavigationResponsePolicyCancel);
+        return;
+    }
+    decisionHandler(WKNavigationResponsePolicyAllow);
+}
+
+- (WKWebView *)webView:(WKWebView *)webView
+createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
+   forNavigationAction:(WKNavigationAction *)navigationAction
+        windowFeatures:(WKWindowFeatures *)windowFeatures
+{
+    if (!navigationAction.targetFrame) {
+        [webView loadRequest:navigationAction.request];
+    }
+    return nil;
+}
+
+@end
+
+@interface SettingsViewController () <UIDocumentPickerDelegate, NSURLSessionDownloadDelegate>
 @property (nonatomic, strong) UISegmentedControl *powercuffSegmented;
 @property (nonatomic, assign) BOOL pendingManualActionsReload;
 @property (nonatomic, assign) BOOL detailMode;
 @property (nonatomic, assign) NSInteger underlyingSection;
 @property (nonatomic, copy)   NSString *bundleTitle;
+@property (nonatomic, strong) NSURLSession *livewpDownloadSession;
+@property (nonatomic, strong) NSURLSessionDownloadTask *livewpDownloadTask;
+@property (nonatomic, strong) CyanideLiveWPDownloadProgressViewController *livewpDownloadProgressController;
+@property (nonatomic, strong) NSURL *livewpDownloadURL;
+@property (nonatomic, strong) NSURLRequest *livewpDownloadRequest;
 @end
 
 // Singleton delegate so MFMailCompose's host VC doesn't need to conform. Lives
@@ -5675,10 +6297,19 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
 - (void)viewDidAppear:(BOOL)animated
 {
     [super viewDidAppear:animated];
+    [self restoreSettingsInteractionAfterModal];
     [self presentPowercuffNominalNoticeIfNeeded];
     if (!self.pendingManualActionsReload) return;
     self.pendingManualActionsReload = NO;
     [self reloadManualActions];
+}
+
+- (void)restoreSettingsInteractionAfterModal
+{
+    self.view.userInteractionEnabled = YES;
+    self.tableView.userInteractionEnabled = YES;
+    self.view.tintAdjustmentMode = UIViewTintAdjustmentModeNormal;
+    self.tableView.tintAdjustmentMode = UIViewTintAdjustmentModeNormal;
 }
 
 - (void)presentPowercuffNominalNoticeIfNeeded
@@ -6168,9 +6799,15 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
            @"title": videoName,
            @"subtitle": detail,
            @"videoPath": absPath ?: @"" },
+        @{ @"kind": @"info",
+           @"title": @"Online Downloads",
+           @"subtitle": @"Downloaded videos are saved to Files > On My iPhone > Cyanide > LiveWP > Downloads. They are not applied automatically; use Select Video File to import one manually." },
         @{ @"kind": @"button",
            @"title": hasVideo ? @"Replace Video File" : @"Select Video File",
            @"action": @"livewp-select-video" },
+        @{ @"kind": @"button",
+           @"title": @"Download Online Video",
+           @"action": @"livewp-online-video" },
     ];
 }
 
@@ -6793,9 +7430,486 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     [self presentViewController:picker animated:YES completion:nil];
 }
 
+- (NSArray<NSDictionary<NSString *, NSString *> *> *)livewpOnlineCatalogues
+{
+    return @[
+        // @{ @"title": @"MyLiveWallpapers",      @"url": @"https://mylivewallpapers.com" },
+        @{ @"title": @"LiveWallpapers4Free",   @"url": @"https://livewallpapers4free.com" },
+        @{ @"title": @"LiveWallP",             @"url": @"https://livewallp.com" },
+        @{ @"title": @"MotionBGS Mobile",      @"url": @"https://motionbgs.com/mobile/" },
+    ];
+}
+
+- (void)openLiveWPCatalogueAtIndex:(NSInteger)index
+{
+    NSArray<NSDictionary<NSString *, NSString *> *> *catalogues = [self livewpOnlineCatalogues];
+    if (catalogues.count == 0) return;
+    CyanideLiveWPBrowserViewController *browser =
+        [[CyanideLiveWPBrowserViewController alloc] initWithCatalogues:catalogues
+                                                         selectedIndex:index];
+    __weak typeof(self) weakSelf = self;
+    browser.downloadHandler = ^(NSURLRequest *downloadRequest) {
+        [weakSelf startLiveWPVideoDownloadWithRequest:downloadRequest];
+    };
+    browser.closeHandler = ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        [self restoreSettingsInteractionAfterModal];
+        if (self.detailMode) {
+            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
+                          withRowAnimation:UITableViewRowAnimationNone];
+        } else {
+            [self.tableView reloadData];
+        }
+    };
+    browser.modalPresentationStyle = UIModalPresentationPageSheet;
+    browser.presentationController.delegate = browser;
+    [self presentViewController:browser animated:YES completion:nil];
+}
+
+- (void)showLiveWPOnlineDownloader
+{
+    [self openLiveWPCatalogueAtIndex:0];
+}
+
+- (void)promptLiveWPVideoURL
+{
+    UIAlertController *ac =
+        [UIAlertController alertControllerWithTitle:@"Download Video"
+                                            message:@"Paste a direct MP4, MOV, or M4V URL."
+                                     preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.placeholder = @"https://example.com/video.mp4";
+        textField.keyboardType = UIKeyboardTypeURL;
+        textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        textField.autocorrectionType = UITextAutocorrectionTypeNo;
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Download"
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(__unused UIAlertAction *action) {
+        NSString *raw = ac.textFields.firstObject.text ?: @"";
+        [self startLiveWPVideoDownloadFromString:raw];
+    }]];
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+- (NSString *)livewpSafeDownloadedVideoNameFromURL:(NSURL *)url response:(NSURLResponse *)response
+{
+    NSString *name = response.suggestedFilename.length ? response.suggestedFilename : url.lastPathComponent;
+    if (!name.length) {
+        NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+        fmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        fmt.dateFormat = @"yyyyMMdd-HHmmss";
+        name = [NSString stringWithFormat:@"LiveWP-%@.mp4", [fmt stringFromDate:[NSDate date]]];
+    }
+
+    NSCharacterSet *bad = [NSCharacterSet characterSetWithCharactersInString:@"/\\:?%*|\"<>"];
+    NSArray<NSString *> *parts = [name componentsSeparatedByCharactersInSet:bad];
+    name = [[parts componentsJoinedByString:@"-"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!name.length) name = @"LiveWP-Download.mp4";
+
+    NSString *ext = name.pathExtension.lowercaseString;
+    if (![@[@"mp4", @"mov", @"m4v"] containsObject:ext]) {
+        NSString *mime = response.MIMEType.lowercaseString ?: @"";
+        NSString *fallbackExt = [mime containsString:@"quicktime"] ? @"mov" : @"mp4";
+        name = [[name stringByDeletingPathExtension] stringByAppendingPathExtension:fallbackExt];
+    }
+    return name;
+}
+
+- (NSString *)livewpDownloadsDirectoryCreating:(BOOL)create error:(NSError **)error
+{
+    NSString *docsPath = [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES) firstObject];
+    NSString *downloadsDir = [[docsPath stringByAppendingPathComponent:@"LiveWP"] stringByAppendingPathComponent:@"Downloads"];
+    if (create) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:downloadsDir
+                                  withIntermediateDirectories:YES
+                                                   attributes:nil
+                                                        error:error];
+    }
+    return downloadsDir;
+}
+
+- (NSString *)uniqueLiveWPDownloadPathForFileName:(NSString *)fileName inDirectory:(NSString *)downloadsDir
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *base = fileName.stringByDeletingPathExtension.length ? fileName.stringByDeletingPathExtension : @"LiveWP-Download";
+    NSString *ext = fileName.pathExtension.length ? fileName.pathExtension : @"mp4";
+    NSString *candidate = [downloadsDir stringByAppendingPathComponent:[base stringByAppendingPathExtension:ext]];
+    NSInteger index = 2;
+    while ([fm fileExistsAtPath:candidate]) {
+        NSString *next = [NSString stringWithFormat:@"%@-%ld", base, (long)index++];
+        candidate = [downloadsDir stringByAppendingPathComponent:[next stringByAppendingPathExtension:ext]];
+    }
+    return candidate;
+}
+
+- (BOOL)saveLiveWPDownloadedVideoAtURL:(NSURL *)url
+                     preferredFileName:(NSString *)preferredFileName
+                         savedFileName:(NSString **)savedFileName
+                                 error:(NSError **)error
+{
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSString *downloadsDir = [self livewpDownloadsDirectoryCreating:YES error:error];
+    if (error && *error) return NO;
+
+    NSString *fileName = preferredFileName.length ? preferredFileName : url.lastPathComponent;
+    if (!fileName.length) fileName = @"LiveWP-Download.mp4";
+    NSString *ext = fileName.pathExtension.lowercaseString;
+    if (![@[@"mp4", @"mov", @"m4v"] containsObject:ext]) {
+        fileName = [[fileName stringByDeletingPathExtension] stringByAppendingPathExtension:@"mp4"];
+    }
+
+    NSString *destPath = [self uniqueLiveWPDownloadPathForFileName:fileName inDirectory:downloadsDir];
+    if (![fm copyItemAtPath:url.path toPath:destPath error:error]) {
+        return NO;
+    }
+
+    NSDictionary *attrs = [fm attributesOfItemAtPath:destPath error:nil];
+    double mb = attrs ? [attrs fileSize] / (1024.0 * 1024.0) : 0.0;
+    if (savedFileName) *savedFileName = destPath.lastPathComponent;
+    log_user("[LIVEWP] Download saved for manual import: %s (%.1f MB)\n",
+             destPath.lastPathComponent.UTF8String,
+             mb);
+    return YES;
+}
+
+- (void)finishLiveWPVideoImportAndSwapIfRunning
+{
+    if (self.detailMode) {
+        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
+                      withRowAnimation:UITableViewRowAnimationNone];
+    } else {
+        [self.tableView reloadData];
+    }
+
+    BOOL applied = settings_tweak_is_applied(kSettingsLiveWPEnabled);
+    log_user("[LIVEWP] import: applied=%d rc_ready=%d\n", applied, g_springboard_rc_ready);
+    if (applied && g_springboard_rc_ready) {
+        dispatch_async(dispatch_get_global_queue(0, 0), ^{
+            @synchronized (settings_rc_lock()) {
+                if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
+                NSString *absPath = livewp_absolute_path();
+                log_user("[LIVEWP] import: swap path=%s\n", absPath ? absPath.UTF8String : "(nil)");
+                if (absPath) livewp_swap_video_in_session(absPath);
+            }
+        });
+    }
+}
+
+- (void)startLiveWPVideoDownloadFromString:(NSString *)rawURL
+{
+    NSString *trimmed = [rawURL stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSURL *url = [NSURL URLWithString:trimmed];
+    if (!url || !([url.scheme.lowercaseString isEqualToString:@"https"] ||
+                  [url.scheme.lowercaseString isEqualToString:@"http"])) {
+        UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Invalid URL"
+                                                                     message:@"Enter a valid http or https video URL."
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+        [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:err animated:YES completion:nil];
+        return;
+    }
+
+    [self startLiveWPVideoDownloadFromURL:url];
+}
+
+- (UIViewController *)livewpPresentationHost
+{
+    UIViewController *host = self;
+    while (host.presentedViewController &&
+           ![host.presentedViewController isBeingDismissed] &&
+           ![host.presentedViewController isKindOfClass:CyanideLiveWPDownloadProgressViewController.class]) {
+        host = host.presentedViewController;
+    }
+    return host;
+}
+
+- (void)startLiveWPVideoDownloadFromURL:(NSURL *)url
+{
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    [self startLiveWPVideoDownloadWithRequest:request];
+}
+
+- (NSMutableURLRequest *)normalizedLiveWPDownloadRequest:(NSURLRequest *)request
+{
+    NSMutableURLRequest *native = [request mutableCopy];
+    if (!native) return nil;
+    native.HTTPMethod = @"GET";
+    native.HTTPBody = nil;
+    native.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    native.timeoutInterval = 30.0;
+    if (![native valueForHTTPHeaderField:@"User-Agent"]) {
+        [native setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+      forHTTPHeaderField:@"User-Agent"];
+    }
+    if (![native valueForHTTPHeaderField:@"Accept"]) {
+        [native setValue:@"video/*,*/*;q=0.8" forHTTPHeaderField:@"Accept"];
+    }
+    if (![native valueForHTTPHeaderField:@"Accept-Language"]) {
+        [native setValue:[NSLocale preferredLanguages].firstObject ?: @"en-US" forHTTPHeaderField:@"Accept-Language"];
+    }
+    return native;
+}
+
+- (void)startLiveWPVideoDownloadWithRequest:(NSURLRequest *)request
+{
+    NSMutableURLRequest *nativeRequest = [self normalizedLiveWPDownloadRequest:request];
+    NSURL *url = nativeRequest.URL;
+    if (!url || !([url.scheme.lowercaseString isEqualToString:@"https"] ||
+                  [url.scheme.lowercaseString isEqualToString:@"http"])) {
+        return;
+    }
+    if (self.livewpDownloadTask) {
+        UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Download Already Running"
+                                                                     message:@"Cancel the current LiveWP download before starting another one."
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+        [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [[self livewpPresentationHost] presentViewController:err animated:YES completion:nil];
+        return;
+    }
+
+    self.livewpDownloadURL = url;
+    self.livewpDownloadRequest = nativeRequest;
+    CyanideLiveWPDownloadProgressViewController *progress = [[CyanideLiveWPDownloadProgressViewController alloc] init];
+    progress.modalPresentationStyle = UIModalPresentationOverFullScreen;
+    progress.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+    __weak typeof(self) weakSelf = self;
+    progress.cancelHandler = ^{
+        [weakSelf cancelLiveWPVideoDownload];
+    };
+    self.livewpDownloadProgressController = progress;
+
+    NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    cfg.timeoutIntervalForRequest = 30.0;
+    cfg.timeoutIntervalForResource = 600.0;
+    self.livewpDownloadSession = [NSURLSession sessionWithConfiguration:cfg delegate:self delegateQueue:nil];
+    self.livewpDownloadTask = [self.livewpDownloadSession downloadTaskWithRequest:nativeRequest];
+
+    [[self livewpPresentationHost] presentViewController:progress animated:YES completion:^{
+        [progress updateWithReceivedBytes:0 expectedBytes:0 host:url.host];
+        [self.livewpDownloadTask resume];
+        log_user("[LIVEWP] Download started: %s\n", url.absoluteString.UTF8String);
+    }];
+}
+
+- (void)cancelLiveWPVideoDownload
+{
+    [self.livewpDownloadTask cancel];
+    [self.livewpDownloadSession invalidateAndCancel];
+    CyanideLiveWPDownloadProgressViewController *progress = self.livewpDownloadProgressController;
+    self.livewpDownloadTask = nil;
+    self.livewpDownloadSession = nil;
+    self.livewpDownloadProgressController = nil;
+    self.livewpDownloadURL = nil;
+    self.livewpDownloadRequest = nil;
+    [self dismissLiveWPDownloadProgressController:progress completion:nil];
+    log_user("[LIVEWP] Download cancelled\n");
+}
+
+- (void)dismissLiveWPDownloadProgressController:(CyanideLiveWPDownloadProgressViewController *)progress
+                                     completion:(dispatch_block_t)completion
+{
+    void (^finish)(void) = ^{
+        self.view.userInteractionEnabled = YES;
+        self.tableView.userInteractionEnabled = YES;
+        if (completion) completion();
+    };
+
+    if (!progress) {
+        finish();
+        return;
+    }
+
+    progress.view.userInteractionEnabled = NO;
+    progress.view.hidden = YES;
+    if (progress.presentingViewController) {
+        [progress dismissViewControllerAnimated:YES completion:finish];
+    } else {
+        finish();
+    }
+}
+
+- (void)showLiveWPToast:(NSString *)message
+{
+    if (!message.length) return;
+    UIViewController *host = [self livewpPresentationHost];
+    UIView *container = host.view ?: self.view;
+    if (!container) return;
+
+    UILabel *toast = [[UILabel alloc] init];
+    toast.translatesAutoresizingMaskIntoConstraints = NO;
+    toast.text = [NSString stringWithFormat:@"  %@  ", message];
+    toast.textAlignment = NSTextAlignmentCenter;
+    toast.textColor = UIColor.whiteColor;
+    toast.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
+    toast.numberOfLines = 2;
+    toast.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.82];
+    toast.layer.cornerRadius = 14.0;
+    toast.layer.cornerCurve = kCACornerCurveContinuous;
+    toast.clipsToBounds = YES;
+    toast.alpha = 0.0;
+    toast.userInteractionEnabled = NO;
+    [container addSubview:toast];
+
+    UILayoutGuide *safe = container.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [toast.centerXAnchor constraintEqualToAnchor:container.centerXAnchor],
+        [toast.bottomAnchor constraintEqualToAnchor:safe.bottomAnchor constant:-24.0],
+        [toast.widthAnchor constraintLessThanOrEqualToAnchor:container.widthAnchor multiplier:0.82],
+        [toast.leadingAnchor constraintGreaterThanOrEqualToAnchor:container.leadingAnchor constant:24.0],
+        [toast.heightAnchor constraintGreaterThanOrEqualToConstant:44.0],
+    ]];
+
+    [UIView animateWithDuration:0.18 animations:^{
+        toast.alpha = 1.0;
+    } completion:^(__unused BOOL finished) {
+        [UIView animateWithDuration:0.22 delay:1.4 options:UIViewAnimationOptionCurveEaseInOut animations:^{
+            toast.alpha = 0.0;
+        } completion:^(__unused BOOL done) {
+            [toast removeFromSuperview];
+        }];
+    }];
+}
+
+- (void)finishLiveWPVideoDownloadWithErrorTitle:(NSString *)title message:(NSString *)message
+{
+    CyanideLiveWPDownloadProgressViewController *progress = self.livewpDownloadProgressController;
+    self.livewpDownloadTask = nil;
+    [self.livewpDownloadSession finishTasksAndInvalidate];
+    self.livewpDownloadSession = nil;
+    self.livewpDownloadProgressController = nil;
+    self.livewpDownloadURL = nil;
+    self.livewpDownloadRequest = nil;
+
+    [self dismissLiveWPDownloadProgressController:progress completion:^{
+        UIAlertController *err = [UIAlertController alertControllerWithTitle:title
+                                                                     message:message
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+        [err addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [[self livewpPresentationHost] presentViewController:err animated:YES completion:nil];
+    }];
+}
+
+- (void)finishSuccessfulLiveWPVideoDownloadWithFileName:(NSString *)fileName
+{
+    CyanideLiveWPDownloadProgressViewController *progress = self.livewpDownloadProgressController;
+    self.livewpDownloadTask = nil;
+    [self.livewpDownloadSession finishTasksAndInvalidate];
+    self.livewpDownloadSession = nil;
+    self.livewpDownloadProgressController = nil;
+    self.livewpDownloadURL = nil;
+    self.livewpDownloadRequest = nil;
+
+    [self dismissLiveWPDownloadProgressController:progress completion:^{
+        NSString *toast = fileName.length
+            ? [NSString stringWithFormat:@"Saved to LiveWP/Downloads/%@", fileName]
+            : @"Saved to LiveWP/Downloads";
+        [self restoreSettingsInteractionAfterModal];
+        [self showLiveWPToast:toast];
+        log_user("[LIVEWP] Download finished; saved for manual import.\n");
+    }];
+}
+
+- (void)URLSession:(NSURLSession *)session
+      downloadTask:(NSURLSessionDownloadTask *)downloadTask
+      didWriteData:(int64_t)bytesWritten
+ totalBytesWritten:(int64_t)totalBytesWritten
+totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
+{
+    if (downloadTask != self.livewpDownloadTask) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.livewpDownloadProgressController updateWithReceivedBytes:totalBytesWritten
+                                                         expectedBytes:totalBytesExpectedToWrite
+                                                                  host:self.livewpDownloadURL.host];
+    });
+}
+
+- (void)URLSession:(NSURLSession *)session
+              task:(NSURLSessionTask *)task
+willPerformHTTPRedirection:(NSHTTPURLResponse *)response
+        newRequest:(NSURLRequest *)request
+ completionHandler:(void (^)(NSURLRequest * _Nullable))completionHandler
+{
+    if (task != self.livewpDownloadTask) {
+        completionHandler(request);
+        return;
+    }
+
+    NSMutableURLRequest *next = [request mutableCopy];
+    NSDictionary<NSString *, NSString *> *headers = self.livewpDownloadRequest.allHTTPHeaderFields;
+    NSString *oldHost = self.livewpDownloadURL.host.lowercaseString ?: @"";
+    NSString *newHost = next.URL.host.lowercaseString ?: @"";
+    BOOL sameHost = oldHost.length && ([oldHost isEqualToString:newHost] ||
+                                       [oldHost hasSuffix:[@"." stringByAppendingString:newHost]] ||
+                                       [newHost hasSuffix:[@"." stringByAppendingString:oldHost]]);
+    for (NSString *key in headers) {
+        if ([[key lowercaseString] isEqualToString:@"cookie"] && !sameHost) continue;
+        if (![next valueForHTTPHeaderField:key]) {
+            [next setValue:headers[key] forHTTPHeaderField:key];
+        }
+    }
+    if (![next valueForHTTPHeaderField:@"Referer"] && self.livewpDownloadURL.absoluteString.length) {
+        [next setValue:self.livewpDownloadURL.absoluteString forHTTPHeaderField:@"Referer"];
+    }
+    log_user("[LIVEWP] Download redirect %ld -> %s\n",
+             (long)response.statusCode,
+             next.URL.absoluteString.UTF8String ?: "(nil)");
+    completionHandler(next);
+}
+
+- (void)URLSession:(NSURLSession *)session
+      downloadTask:(NSURLSessionDownloadTask *)downloadTask
+didFinishDownloadingToURL:(NSURL *)location
+{
+    if (downloadTask != self.livewpDownloadTask) return;
+
+    NSHTTPURLResponse *http = [downloadTask.response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)downloadTask.response : nil;
+    if (http && (http.statusCode < 200 || http.statusCode >= 300)) {
+        NSString *msg = [NSString stringWithFormat:@"Server returned HTTP %ld.", (long)http.statusCode];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self finishLiveWPVideoDownloadWithErrorTitle:@"Download Failed" message:msg];
+        });
+        return;
+    }
+
+    NSString *fileName = [self livewpSafeDownloadedVideoNameFromURL:self.livewpDownloadURL ?: downloadTask.originalRequest.URL
+                                                           response:downloadTask.response];
+    NSError *saveError = nil;
+    NSString *savedFileName = nil;
+    BOOL ok = [self saveLiveWPDownloadedVideoAtURL:location
+                                 preferredFileName:fileName
+                                     savedFileName:&savedFileName
+                                             error:&saveError];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!ok) {
+            [self finishLiveWPVideoDownloadWithErrorTitle:@"Save Failed"
+                                                  message:saveError.localizedDescription ?: @"The downloaded file could not be saved."];
+            return;
+        }
+        [self finishSuccessfulLiveWPVideoDownloadWithFileName:savedFileName];
+    });
+}
+
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error
+{
+    if (task != self.livewpDownloadTask || !error) return;
+    if (error.code == NSURLErrorCancelled) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self finishLiveWPVideoDownloadWithErrorTitle:@"Download Failed"
+                                              message:error.localizedDescription ?: @"The video could not be downloaded."];
+    });
+}
 
 
 - (BOOL)importLiveWPVideoAtURL:(NSURL *)url error:(NSError **)error
+{
+    return [self importLiveWPVideoAtURL:url preferredFileName:nil error:error];
+}
+
+- (BOOL)importLiveWPVideoAtURL:(NSURL *)url preferredFileName:(NSString *)preferredFileName error:(NSError **)error
 {
     NSFileManager *fm = [NSFileManager defaultManager];
     
@@ -6827,7 +7941,12 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     }
     
     // Copy new video file
-    NSString *fileName = url.lastPathComponent;
+    NSString *fileName = preferredFileName.length ? preferredFileName : url.lastPathComponent;
+    if (!fileName.length) fileName = @"LiveWP-Video.mp4";
+    NSString *ext = fileName.pathExtension.lowercaseString;
+    if (![@[@"mp4", @"mov", @"m4v"] containsObject:ext]) {
+        fileName = [[fileName stringByDeletingPathExtension] stringByAppendingPathExtension:@"mp4"];
+    }
     NSString *destPath = [livewpDir stringByAppendingPathComponent:fileName];
     
     // Remove existing file with same name
@@ -6953,27 +8072,7 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
             return;
         }
         
-        // Reload LiveWP section to show new video name
-        if (self.detailMode) {
-            [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
-                          withRowAnimation:UITableViewRowAnimationNone];
-        } else {
-            [self.tableView reloadData];
-        }
-
-        // 如果 LiveWP 已经在运行，热替换视频（复用旧 player 实例）
-        BOOL applied = settings_tweak_is_applied(kSettingsLiveWPEnabled);
-        log_user("[LIVEWP] picker: applied=%d rc_ready=%d\n", applied, g_springboard_rc_ready);
-        if (applied && g_springboard_rc_ready) {
-            dispatch_async(dispatch_get_global_queue(0, 0), ^{
-                @synchronized (settings_rc_lock()) {
-                    if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
-                    NSString *absPath = livewp_absolute_path();
-                    log_user("[LIVEWP] picker: swap path=%s\n", absPath ? absPath.UTF8String : "(nil)");
-                    if (absPath) livewp_swap_video_in_session(absPath);
-                }
-            });
-        }
+        [self finishLiveWPVideoImportAndSwapIfRunning];
         return;
     }
     
@@ -7725,7 +8824,9 @@ void cyanide_present_contact(UIViewController *host)
                             indexPath.section == SectionThemer;
         NSString *action = row[@"action"];
         if (indexPath.section == SectionLiveWP &&
-            [action isEqualToString:@"livewp-select-video"]) {
+            ([action isEqualToString:@"livewp-select-video"] ||
+             [action isEqualToString:@"livewp-online-video"])) {
+            rowSupported = YES;
             UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"livewp-picker"];
             cell.selectionStyle = rowSupported ? UITableViewCellSelectionStyleDefault : UITableViewCellSelectionStyleNone;
             cell.backgroundColor = UIColor.clearColor;
@@ -7744,7 +8845,10 @@ void cyanide_present_contact(UIViewController *host)
             button.layer.cornerCurve = kCACornerCurveContinuous;
             button.layer.borderWidth = 1.0;
             button.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.22].CGColor;
-            [button addTarget:self action:@selector(showLiveWPVideoPicker) forControlEvents:UIControlEventTouchUpInside];
+            SEL buttonAction = [action isEqualToString:@"livewp-online-video"]
+                ? @selector(showLiveWPOnlineDownloader)
+                : @selector(showLiveWPVideoPicker);
+            [button addTarget:self action:buttonAction forControlEvents:UIControlEventTouchUpInside];
             [cell.contentView addSubview:button];
 
             UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
@@ -8900,6 +10004,8 @@ void cyanide_present_contact(UIViewController *host)
         NSString *action = row[@"action"];
         if ([action isEqualToString:@"livewp-select-video"]) {
             [self showLiveWPVideoPicker];
+        } else if ([action isEqualToString:@"livewp-online-video"]) {
+            [self showLiveWPOnlineDownloader];
         }
         return;
     }
