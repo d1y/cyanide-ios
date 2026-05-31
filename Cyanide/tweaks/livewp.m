@@ -28,6 +28,7 @@ static uint64_t g_livewp_looper = 0;
 static uint64_t g_livewp_home_window = 0;
 static uint64_t g_livewp_lock_window = 0;
 static bool g_livewp_configured = false;
+static bool g_livewp_paused = false;
 
 typedef struct { double x, y, w, h; } LiveWPRect;
 
@@ -80,6 +81,7 @@ bool livewp_apply_in_session(void)
     if (!livewp_attach_and_play()) { livewp_cleanup(); return false; }
 
     g_livewp_configured = true;
+    g_livewp_paused = false;
     log_user("[LIVEWP] OK: playing.\n");
     return true;
 }
@@ -98,6 +100,7 @@ bool livewp_stop_in_session(void)
 
     livewp_cleanup();
     g_livewp_configured = false;
+    g_livewp_paused = false;
     log_user("[LIVEWP] stopped.\n");
     return true;
 }
@@ -105,7 +108,44 @@ bool livewp_stop_in_session(void)
 bool livewp_repair_in_session(void)
 {
     if (!g_livewp_configured) return false;
+    if (g_livewp_paused) return true;
     return livewp_attach_and_play();
+}
+
+bool livewp_pause_in_session(void)
+{
+    if (!g_livewp_configured) return true;
+
+    if (r_is_objc_ptr(g_livewp_player))
+        r_msg2_main(g_livewp_player, "pause", 0, 0, 0, 0);
+    if (r_is_objc_ptr(g_livewp_home_layer))
+        r_msg2_main(g_livewp_home_layer, "setHidden:", 1, 0, 0, 0);
+    if (r_is_objc_ptr(g_livewp_lock_layer))
+        r_msg2_main(g_livewp_lock_layer, "setHidden:", 1, 0, 0, 0);
+
+    if (!g_livewp_paused) {
+        log_user("[LIVEWP] paused while screen is asleep.\n");
+    }
+    g_livewp_paused = true;
+    return true;
+}
+
+bool livewp_resume_in_session(void)
+{
+    if (!g_livewp_configured) return false;
+
+    bool wasPaused = g_livewp_paused;
+    g_livewp_paused = false;
+    if (r_is_objc_ptr(g_livewp_home_layer))
+        r_msg2_main(g_livewp_home_layer, "setHidden:", 0, 0, 0, 0);
+    if (r_is_objc_ptr(g_livewp_lock_layer))
+        r_msg2_main(g_livewp_lock_layer, "setHidden:", 0, 0, 0, 0);
+
+    bool ok = livewp_attach_and_play();
+    if (wasPaused) {
+        log_user("[LIVEWP] resumed after screen wake result=%d.\n", ok);
+    }
+    return ok;
 }
 
 // 热替换视频：复用旧 player 实例，只替换 playerItem 和 looper
@@ -156,6 +196,7 @@ void livewp_forget_remote_state(void)
     g_livewp_home_window = 0;
     g_livewp_lock_window = 0;
     g_livewp_configured = false;
+    g_livewp_paused = false;
 }
 
 // ============================================================================
@@ -224,6 +265,7 @@ static bool livewp_create_player(NSString *videoPath)
     g_livewp_home_layer = homeLayer;
     g_livewp_lock_layer = lockLayer;
     g_livewp_looper = looper;
+    g_livewp_paused = false;
     log_user("[LIVEWP] player OK (2 layers)\n");
     return true;
 }
@@ -255,6 +297,12 @@ static bool livewp_ensure_layer_in_window(uint64_t layer, uint64_t window, bool 
 
 static bool livewp_attach_and_play(void)
 {
+    if (g_livewp_paused) {
+        if (r_is_objc_ptr(g_livewp_player))
+            r_msg2_main(g_livewp_player, "pause", 0, 0, 0, 0);
+        return true;
+    }
+
     bool homeMoved = false;
     bool lockMoved = false;
     bool homeOK = livewp_ensure_layer_in_window(g_livewp_home_layer,
@@ -337,4 +385,5 @@ static void livewp_cleanup(void)
     g_livewp_looper = 0;
     g_livewp_home_window = 0;
     g_livewp_lock_window = 0;
+    g_livewp_paused = false;
 }

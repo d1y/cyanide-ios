@@ -13,6 +13,8 @@
 // 标准 Tweak 入口点
 bool livewp_apply_in_session(void);
 bool livewp_repair_in_session(void);
+bool livewp_pause_in_session(void);
+bool livewp_resume_in_session(void);
 bool livewp_stop_in_session(void);
 void livewp_forget_remote_state(void);
 bool livewp_swap_video_in_session(NSString *videoPath);

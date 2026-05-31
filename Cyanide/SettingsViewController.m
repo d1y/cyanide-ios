@@ -498,6 +498,9 @@ static void settings_start_rssi_live_loop(void);
 static void settings_start_typebanner_live_loop(void);
 static void settings_start_themer_live_loop(void);
 static void settings_start_livewp_live_loop(void);
+static BOOL settings_livewp_should_play(void);
+static void settings_pause_livewp_for_sleep_async(const char *reason);
+static void settings_resume_livewp_after_wake_async(const char *reason);
 static void settings_schedule_themer_repair_burst(const char *reason);
 static void settings_schedule_themer_quiet_repair_burst(const char *reason);
 static void settings_notify_remote_call_state_changed(void);
@@ -772,10 +775,16 @@ static void settings_install_screen_awake_observers(void)
                                               &g_springboard_blanked_notify_token,
                                               dispatch_get_main_queue(), ^(int token) {
             (void)token;
-            if (settings_refresh_screen_awake_state("springboard.hasBlankedScreen")) {
+            BOOL woke = settings_refresh_screen_awake_state("springboard.hasBlankedScreen");
+            log_user("[LIVEWP] Screen notify springboard.hasBlankedScreen awake=%d.\n",
+                     settings_screen_awake_cached() ? 1 : 0);
+            if (woke) {
                 settings_apply_statbar_once_async("screen awake");
                 settings_apply_nsbar_once_async("screen awake");
+                settings_resume_livewp_after_wake_async("screen awake");
                 settings_schedule_themer_quiet_repair_burst("screen awake");
+            } else if (!settings_screen_awake_cached()) {
+                settings_pause_livewp_for_sleep_async("screen asleep");
             }
         });
         if (status != NOTIFY_STATUS_OK) {
@@ -786,10 +795,16 @@ static void settings_install_screen_awake_observers(void)
                                           &g_display_status_notify_token,
                                           dispatch_get_main_queue(), ^(int token) {
             (void)token;
-            if (settings_refresh_screen_awake_state("iokit.displayStatus")) {
+            BOOL woke = settings_refresh_screen_awake_state("iokit.displayStatus");
+            log_user("[LIVEWP] Screen notify iokit.displayStatus awake=%d.\n",
+                     settings_screen_awake_cached() ? 1 : 0);
+            if (woke) {
                 settings_apply_statbar_once_async("screen awake");
                 settings_apply_nsbar_once_async("screen awake");
+                settings_resume_livewp_after_wake_async("display awake");
                 settings_schedule_themer_quiet_repair_burst("display awake");
+            } else if (!settings_screen_awake_cached()) {
+                settings_pause_livewp_for_sleep_async("display asleep");
             }
         });
         if (status != NOTIFY_STATUS_OK) {
@@ -3647,6 +3662,7 @@ static void settings_start_livewp_live_loop(void)
     dispatch_async(dispatch_get_global_queue(0, 0), ^{
         NSUInteger tick = 0;
         NSUInteger failures = 0;
+        BOOL pausedForSleep = NO;
         printf("[SETTINGS] LiveWP live repair loop started interval=%uus background=%uus max=%lu\n",
                kLiveWPLiveIntervalUS,
                kLiveWPLiveBackgroundIntervalUS,
@@ -3660,6 +3676,33 @@ static void settings_start_livewp_live_loop(void)
                    !settings_cleanup_in_progress() &&
                    !g_livewp_live_stop_requested &&
                    tick < kLiveWPLiveMaxTicks) {
+                useconds_t intervalUS = settings_live_interval(kLiveWPLiveIntervalUS,
+                                                               kLiveWPLiveBackgroundIntervalUS);
+                if (!settings_livewp_should_play()) {
+                    @synchronized (settings_rc_lock()) {
+                        if (g_springboard_rc_ready &&
+                            [d boolForKey:kSettingsLiveWPEnabled] &&
+                            !settings_cleanup_in_progress() &&
+                            !g_livewp_live_stop_requested) {
+                            (void)livewp_pause_in_session();
+                        }
+                    }
+                    if (!pausedForSleep) {
+                        pausedForSleep = YES;
+                        printf("[SETTINGS] LiveWP repair loop paused while screen is asleep\n");
+                        log_user("[LIVEWP] Repair loop paused: screen asleep.\n");
+                    }
+                    settings_live_loop_sleep_interruptible(0,
+                                                           intervalUS,
+                                                           &g_livewp_live_stop_requested);
+                    continue;
+                }
+                if (pausedForSleep) {
+                    pausedForSleep = NO;
+                    printf("[SETTINGS] LiveWP repair loop resumed after screen wake\n");
+                    log_user("[LIVEWP] Repair loop resumed: screen awake.\n");
+                }
+
                 bool ok = false;
                 @synchronized (settings_rc_lock()) {
                     if (g_livewp_live_stop_requested) break;
@@ -3667,7 +3710,11 @@ static void settings_start_livewp_live_loop(void)
                         failures++;
                         break;
                     }
-                    ok = livewp_repair_in_session();
+                    if (!settings_livewp_should_play()) {
+                        ok = livewp_pause_in_session();
+                    } else {
+                        ok = livewp_resume_in_session();
+                    }
                 }
 
                 if (tick == 0) {
@@ -3684,8 +3731,7 @@ static void settings_start_livewp_live_loop(void)
                     tick >= kLiveWPLiveMaxTicks) break;
 
                 settings_live_loop_sleep_interruptible(0,
-                                                       settings_live_interval(kLiveWPLiveIntervalUS,
-                                                                              kLiveWPLiveBackgroundIntervalUS),
+                                                       intervalUS,
                                                        &g_livewp_live_stop_requested);
             }
         } @finally {
@@ -3696,6 +3742,67 @@ static void settings_start_livewp_live_loop(void)
                    g_livewp_live_stop_requested);
             __sync_lock_release(&g_livewp_live_running);
         }
+    });
+}
+
+static BOOL settings_livewp_should_play(void)
+{
+    (void)settings_refresh_screen_awake_state(NULL);
+    return settings_screen_awake_cached();
+}
+
+static void settings_pause_livewp_for_sleep_async(const char *reason)
+{
+    if (!settings_device_supported()) return;
+    if (settings_cleanup_in_progress() || g_settings_termination_cleanup_started) return;
+
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (![d boolForKey:kSettingsLiveWPEnabled] || !g_springboard_rc_ready) return;
+
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        @synchronized (settings_rc_lock()) {
+            if (settings_cleanup_in_progress() ||
+                g_settings_termination_cleanup_started ||
+                ![d boolForKey:kSettingsLiveWPEnabled] ||
+                !g_springboard_rc_ready) return;
+            if (settings_livewp_should_play()) return;
+            bool ok = livewp_pause_in_session();
+            printf("[SETTINGS] LiveWP paused%s%s result=%d\n",
+                   reason ? ": " : "", reason ?: "", ok);
+            log_user("[LIVEWP] Screen sleep pause%s%s result=%d.\n",
+                     reason ? ": " : "", reason ?: "", ok ? 1 : 0);
+        }
+    });
+}
+
+static void settings_resume_livewp_after_wake_async(const char *reason)
+{
+    if (!settings_device_supported()) return;
+    if (settings_cleanup_in_progress() || g_settings_termination_cleanup_started) return;
+
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (![d boolForKey:kSettingsLiveWPEnabled] || !g_springboard_rc_ready) return;
+
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        bool ok = false;
+        @synchronized (settings_rc_lock()) {
+            if (settings_cleanup_in_progress() ||
+                g_settings_termination_cleanup_started ||
+                ![d boolForKey:kSettingsLiveWPEnabled] ||
+                !g_springboard_rc_ready) return;
+            if (!settings_livewp_should_play()) {
+                (void)livewp_pause_in_session();
+                return;
+            }
+            ok = livewp_resume_in_session();
+            if (ok) settings_mark_tweak_applied(kSettingsLiveWPEnabled, YES);
+            printf("[SETTINGS] LiveWP resumed%s%s result=%d\n",
+                   reason ? ": " : "", reason ?: "", ok);
+            log_user("[LIVEWP] Screen wake resume%s%s result=%d.\n",
+                     reason ? ": " : "", reason ?: "", ok ? 1 : 0);
+        }
+        if (ok) settings_start_livewp_live_loop();
+        settings_notify_package_queue_changed_async();
     });
 }
 
@@ -3824,6 +3931,9 @@ void settings_application_did_enter_background(void)
     if (settings_cleanup_in_progress() || g_settings_termination_cleanup_started) return;
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if ([d boolForKey:kSettingsLiveWPEnabled] && g_springboard_rc_ready) {
+        settings_pause_livewp_for_sleep_async("entered background");
+    }
     BOOL anyLiveLoopNeeded =
         ([d boolForKey:kSettingsAxonLiteEnabled]    && g_springboard_rc_ready) ||
         (settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled] && g_springboard_rc_ready) ||
@@ -3870,6 +3980,7 @@ void settings_application_will_enter_foreground(void)
     settings_apply_nicebarlite_once_async("will enter foreground");
     settings_apply_rssi_once_async("will enter foreground");
     settings_apply_axonlite_once_async("will enter foreground");
+    settings_resume_livewp_after_wake_async("will enter foreground");
     settings_start_themer_live_loop();
     if ([[NSUserDefaults standardUserDefaults] boolForKey:kSettingsTypeBannerEnabled]) {
         settings_start_typebanner_live_loop();
@@ -3886,6 +3997,7 @@ void settings_application_did_become_active(void)
     settings_apply_nicebarlite_once_async("became active");
     settings_apply_rssi_once_async("became active");
     settings_apply_axonlite_once_async("became active");
+    settings_resume_livewp_after_wake_async("became active");
     settings_start_themer_live_loop();
     if ([[NSUserDefaults standardUserDefaults] boolForKey:kSettingsTypeBannerEnabled]) {
         settings_start_typebanner_live_loop();
