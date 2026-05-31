@@ -67,10 +67,8 @@ static dispatch_source_t g_sigterm_source;
                                                   dispatch_get_main_queue());
         dispatch_source_set_event_handler(g_sigterm_source, ^{
             log_user("[CLEANUP] SIGTERM received; starting best-effort termination cleanup.\n");
-            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-                settings_best_effort_termination_cleanup("SIGTERM");
-                _Exit(0);
-            });
+            settings_best_effort_termination_cleanup("SIGTERM");
+            _Exit(0);
         });
         dispatch_resume(g_sigterm_source);
     });

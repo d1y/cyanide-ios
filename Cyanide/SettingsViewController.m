@@ -1062,6 +1062,29 @@ static void settings_wait_live_loops_stopped_for_switch(const char *reason)
     }
 }
 
+static void settings_wait_live_loops_stopped_for_termination(const char *reason)
+{
+    uint64_t startUS = settings_now_us();
+    const uint64_t timeoutUS = 800000ULL;
+    while (g_statbar_live_running || g_nsbar_live_running || g_nicebarlite_live_running || g_rssi_live_running ||
+           g_axonlite_live_running || g_typebanner_live_running ||
+           g_themer_live_running || g_themer_repair_running ||
+           g_livewp_live_running) {
+        uint64_t nowUS = settings_now_us();
+        uint64_t elapsedUS = (startUS != 0 && nowUS >= startUS) ? nowUS - startUS : 0;
+        if (elapsedUS >= timeoutUS) {
+            printf("[SETTINGS] termination live-loop wait timed out%s%s stat=%d nsbar=%d nicebar=%d rssi=%d axon=%d type=%d themer=%d livewp=%d\n",
+                   reason ? ": " : "", reason ?: "",
+                   g_statbar_live_running, g_nsbar_live_running, g_nicebarlite_live_running, g_rssi_live_running,
+                   g_axonlite_live_running, g_typebanner_live_running,
+                   g_themer_live_running || g_themer_repair_running,
+                   g_livewp_live_running);
+            break;
+        }
+        usleep(50000);
+    }
+}
+
 static void settings_live_loop_sleep_interruptible(uint64_t targetUS,
                                                   useconds_t fallbackUS,
                                                   volatile int *stopFlag)
@@ -1514,8 +1537,16 @@ void settings_best_effort_termination_cleanup(const char *reason)
     }
 
     settings_request_all_live_loops_stop("termination cleanup");
-    log_user("[CLEANUP] App termination: skipped heavy KRW teardown; live loops were only asked to stop.\n");
-    printf("[SETTINGS] termination cleanup limited to stop requests only: %s\n", why);
+    settings_end_statbar_background_task_async("termination cleanup");
+    settings_wait_live_loops_stopped_for_termination(why);
+    settings_forget_springboard_tweak_state_locked();
+    if (g_springboard_rc_ready) {
+        abandon_remote_call();
+        g_springboard_rc_ready = 0;
+        g_springboard_sandbox_escaped = 0;
+    }
+    log_user("[CLEANUP] App termination: live loops stopped and SpringBoard RemoteCall was abandoned.\n");
+    printf("[SETTINGS] termination cleanup abandoned SpringBoard RemoteCall: %s\n", why);
 }
 
 void settings_destroy_springboard_remote_call_sync(void)
@@ -3931,6 +3962,13 @@ void settings_application_did_enter_background(void)
     if (settings_cleanup_in_progress() || g_settings_termination_cleanup_started) return;
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (![d boolForKey:kSettingsKeepAlive]) {
+        settings_request_all_live_loops_stop("entered background without keepAlive");
+        settings_end_statbar_background_task_async("entered background without keepAlive");
+        printf("[SETTINGS] app entered background without keepAlive; live loops stop requested\n");
+        return;
+    }
+
     if ([d boolForKey:kSettingsLiveWPEnabled] && g_springboard_rc_ready) {
         settings_pause_livewp_for_sleep_async("entered background");
     }
