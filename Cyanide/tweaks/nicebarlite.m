@@ -6,6 +6,7 @@
 #import "nicebarlite.h"
 #import "remote_objc.h"
 #import "../TaskRop/RemoteCall.h"
+#import "../LogTextView.h"
 
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
@@ -60,8 +61,17 @@ static const double kNBLPillFillAlpha = 0.92;
 static const double kNBLPillBorderAlpha = 0.42;
 static const uint64_t kNBLPillTagBase = 99640;
 
+// Manually flip to true when collecting detailed NiceBar Lite timing logs.
+static const bool kNBLDebugLogging = false;
+
+static const unsigned long long kNBLSlowLogMs = 100;
+static const uint64_t kNBLFullTraceTicks = 3;
+
+#define NBL_DEBUG_LOG(fmt, ...) do { \
+    if (kNBLDebugLogging) log_user(fmt, ##__VA_ARGS__); \
+} while (0)
+
 static uint64_t gNBLWindow = 0;
-static uint64_t gNBLPills[NiceBarLiteSlotCount] = {0};
 static uint64_t gNBLLabels[NiceBarLiteSlotCount] = {0};
 static uint64_t gNBLSetTextSel = 0;
 static uint64_t gNBLSetTextColorSel = 0;
@@ -71,7 +81,6 @@ static uint64_t gNBLAllocSel = 0;
 static uint64_t gNBLInitUTF8Sel = 0;
 static uint64_t gNBLUIApplicationClass = 0;
 static uint64_t gNBLUIWindowClass = 0;
-static uint64_t gNBLUIViewClass = 0;
 static uint64_t gNBLUILabelClass = 0;
 static uint64_t gNBLUIVisualEffectViewClass = 0;
 static uint64_t gNBLUIBlurEffectClass = 0;
@@ -110,6 +119,68 @@ static kern_return_t (*pIOObjectRelease)(io_object_t) = NULL;
 static bool nbl_should_log_tick(void)
 {
     return gNBLApplyTick == 1;
+}
+
+static bool nbl_should_trace_apply(void)
+{
+    return gNBLApplyTick > 0 && gNBLApplyTick <= kNBLFullTraceTicks;
+}
+
+static uint64_t nbl_now_us(void)
+{
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+    return ((uint64_t)ts.tv_sec * 1000000ULL) + ((uint64_t)ts.tv_nsec / 1000ULL);
+}
+
+static unsigned long long nbl_elapsed_ms_since(uint64_t startUs)
+{
+    if (startUs == 0) return 0;
+    uint64_t nowUs = nbl_now_us();
+    if (nowUs <= startUs) return 0;
+    return (unsigned long long)((nowUs - startUs + 500ULL) / 1000ULL);
+}
+
+static const char *nbl_slot_name(int slot)
+{
+    switch (slot) {
+        case NiceBarLiteSlotTopLeft: return "top-left";
+        case NiceBarLiteSlotTopRight: return "top-right";
+        case NiceBarLiteSlotBottomLeft: return "bottom-left";
+        case NiceBarLiteSlotBottomRight: return "bottom-right";
+        case NiceBarLiteSlotBottomCenter: return "center";
+        default: return "unknown";
+    }
+}
+
+static const char *nbl_kind_name(int kind)
+{
+    switch (kind) {
+        case NiceBarLiteContentOff: return "off";
+        case NiceBarLiteContentCustomText: return "custom";
+        case NiceBarLiteContentSystem: return "system";
+        case NiceBarLiteContentTimeFormat: return "time";
+        case NiceBarLiteContentWeather: return "weather";
+        default: return "unknown";
+    }
+}
+
+static const char *nbl_system_item_name(int item)
+{
+    switch (item) {
+        case NiceBarLiteSystemBatteryTemp: return "battery-temp";
+        case NiceBarLiteSystemFreeRAM: return "free-ram";
+        case NiceBarLiteSystemBatteryPercent: return "battery-percent";
+        case NiceBarLiteSystemNetworkSpeed: return "network-speed";
+        case NiceBarLiteSystemUptime: return "uptime";
+        case NiceBarLiteSystemDate: return "date";
+        case NiceBarLiteSystemLunarDate: return "lunar-date";
+        case NiceBarLiteSystemTodayTraffic: return "today-traffic";
+        case NiceBarLiteSystemCurrentIP: return "current-ip";
+        case NiceBarLiteSystemFreeDisk: return "free-disk";
+        case NiceBarLiteSystemThermalState: return "thermal-state";
+        default: return "unknown";
+    }
 }
 
 static bool nbl_ensure_iokit_symbols(void)
@@ -207,23 +278,44 @@ static double nbl_read_battery_temp_c_remote(void)
 
 static double nbl_read_battery_temp_c(void)
 {
+    uint64_t startUs = nbl_now_us();
+    uint64_t localStartUs = nbl_now_us();
     static double cachedTempC = -1.0;
     static time_t lastRemoteRead = 0;
 
     double localTempC = nbl_read_battery_temp_c_local();
+    unsigned long long localMs = nbl_elapsed_ms_since(localStartUs);
     if (localTempC > 0.0) {
         cachedTempC = localTempC;
+        unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
+        if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
+            NBL_DEBUG_LOG("[NICEBARLITE][TEMP] source=local value=%.1fC local=%llums total=%llums\n",
+                     cachedTempC, localMs, totalMs);
+        }
         return cachedTempC;
     }
 
     time_t now = time(NULL);
     if (lastRemoteRead != 0 && now >= lastRemoteRead && (now - lastRemoteRead) < 60) {
+        unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
+        if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
+            NBL_DEBUG_LOG("[NICEBARLITE][TEMP] source=cache value=%.1fC local=%llums total=%llums\n",
+                     cachedTempC, localMs, totalMs);
+        }
         return cachedTempC;
     }
 
     lastRemoteRead = now;
+    uint64_t remoteStartUs = nbl_now_us();
     double remoteTempC = nbl_read_battery_temp_c_remote();
+    unsigned long long remoteMs = nbl_elapsed_ms_since(remoteStartUs);
     if (remoteTempC > 0.0) cachedTempC = remoteTempC;
+    unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
+    if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
+        NBL_DEBUG_LOG("[NICEBARLITE][TEMP] source=%s value=%.1fC local=%llums remote=%llums total=%llums\n",
+                 remoteTempC > 0.0 ? "remote" : "unavailable",
+                 cachedTempC, localMs, remoteMs, totalMs);
+    }
     return cachedTempC;
 }
 
@@ -364,6 +456,7 @@ static NSTimeInterval nbl_today_start_time(void)
 
 static NSString *nbl_today_traffic_text(void)
 {
+    uint64_t startUs = nbl_now_us();
     static BOOL haveBaseline = NO;
     static NSTimeInterval baselineDayStart = 0.0;
     static uint64_t baselineIn = 0;
@@ -371,14 +464,22 @@ static NSString *nbl_today_traffic_text(void)
 
     uint64_t totalIn = 0;
     uint64_t totalOut = 0;
-    if (!nbl_read_net_totals(&totalIn, &totalOut)) return @"T --";
+    if (!nbl_read_net_totals(&totalIn, &totalOut)) {
+        unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
+        if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
+            NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] source=getifaddrs-failed total=%llums\n", totalMs);
+        }
+        return @"T --";
+    }
 
     NSTimeInterval dayStart = nbl_today_start_time();
+    BOOL resetBaseline = NO;
     if (!haveBaseline ||
         dayStart <= 0.0 ||
         fabs(dayStart - baselineDayStart) > 1.0 ||
         totalIn < baselineIn ||
         totalOut < baselineOut) {
+        resetBaseline = YES;
         haveBaseline = YES;
         baselineDayStart = dayStart;
         baselineIn = totalIn;
@@ -387,13 +488,28 @@ static NSString *nbl_today_traffic_text(void)
 
     uint64_t down = totalIn >= baselineIn ? totalIn - baselineIn : 0;
     uint64_t up = totalOut >= baselineOut ? totalOut - baselineOut : 0;
-    return [NSString stringWithFormat:@"T %@", nbl_format_bytes(down + up)];
+    NSString *text = [NSString stringWithFormat:@"T %@", nbl_format_bytes(down + up)];
+    unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
+    if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
+        NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] reset=%d bytes=%llu total=%llums\n",
+                 resetBaseline ? 1 : 0,
+                 (unsigned long long)(down + up),
+                 totalMs);
+    }
+    return text;
 }
 
 static NSString *nbl_current_ip_text(void)
 {
+    uint64_t startUs = nbl_now_us();
     struct ifaddrs *head = NULL;
-    if (getifaddrs(&head) != 0) return @"IP --";
+    if (getifaddrs(&head) != 0) {
+        unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
+        if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
+            NBL_DEBUG_LOG("[NICEBARLITE][IP] source=getifaddrs-failed total=%llums\n", totalMs);
+        }
+        return @"IP --";
+    }
 
     NSString *wifiIP = nil;
     NSString *fallbackIP = nil;
@@ -418,31 +534,86 @@ static NSString *nbl_current_ip_text(void)
 
     freeifaddrs(head);
     NSString *ip = wifiIP ?: fallbackIP;
-    return ip.length ? [NSString stringWithFormat:@"IP %@", ip] : @"IP --";
+    NSString *text = ip.length ? [NSString stringWithFormat:@"IP %@", ip] : @"IP --";
+    unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
+    if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
+        NBL_DEBUG_LOG("[NICEBARLITE][IP] source=%s resultLen=%lu total=%llums\n",
+                 wifiIP.length ? "wifi" : (fallbackIP.length ? "fallback" : "none"),
+                 (unsigned long)text.length,
+                 totalMs);
+    }
+    return text;
 }
 
 static NSString *nbl_free_disk_text(void)
 {
+    uint64_t startUs = nbl_now_us();
     NSURL *homeURL = [NSURL fileURLWithPath:NSHomeDirectory() isDirectory:YES];
     NSNumber *available = nil;
+    uint64_t importantStartUs = nbl_now_us();
     if ([homeURL getResourceValue:&available
                             forKey:NSURLVolumeAvailableCapacityForImportantUsageKey
                              error:nil] && available) {
-        return [NSString stringWithFormat:@"Disk %@", nbl_format_disk_bytes(available.unsignedLongLongValue)];
+        unsigned long long importantMs = nbl_elapsed_ms_since(importantStartUs);
+        NSString *text = [NSString stringWithFormat:@"Disk %@", nbl_format_disk_bytes(available.unsignedLongLongValue)];
+        unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
+        if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
+            NBL_DEBUG_LOG("[NICEBARLITE][DISK] source=important bytes=%llu important=%llums total=%llums\n",
+                     available.unsignedLongLongValue,
+                     importantMs,
+                     totalMs);
+        }
+        return text;
     }
+    unsigned long long importantMs = nbl_elapsed_ms_since(importantStartUs);
+
+    uint64_t capacityStartUs = nbl_now_us();
     if ([homeURL getResourceValue:&available
                             forKey:NSURLVolumeAvailableCapacityKey
                              error:nil] && available) {
-        return [NSString stringWithFormat:@"Disk %@", nbl_format_disk_bytes(available.unsignedLongLongValue)];
+        unsigned long long capacityMs = nbl_elapsed_ms_since(capacityStartUs);
+        NSString *text = [NSString stringWithFormat:@"Disk %@", nbl_format_disk_bytes(available.unsignedLongLongValue)];
+        unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
+        if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
+            NBL_DEBUG_LOG("[NICEBARLITE][DISK] source=available bytes=%llu important=%llums available=%llums total=%llums\n",
+                     available.unsignedLongLongValue,
+                     importantMs,
+                     capacityMs,
+                     totalMs);
+        }
+        return text;
     }
+    unsigned long long capacityMs = nbl_elapsed_ms_since(capacityStartUs);
 
     NSError *error = nil;
+    uint64_t fsStartUs = nbl_now_us();
     NSDictionary<NSFileAttributeKey, id> *attrs =
         [[NSFileManager defaultManager] attributesOfFileSystemForPath:NSHomeDirectory()
                                                                 error:&error];
+    unsigned long long fsMs = nbl_elapsed_ms_since(fsStartUs);
     NSNumber *freeBytes = attrs[NSFileSystemFreeSize];
-    if (!freeBytes || error) return @"Disk --";
-    return [NSString stringWithFormat:@"Disk %@", nbl_format_disk_bytes(freeBytes.unsignedLongLongValue)];
+    unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
+    if (!freeBytes || error) {
+        if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
+            NBL_DEBUG_LOG("[NICEBARLITE][DISK] source=failed important=%llums available=%llums fs=%llums total=%llums error=%s\n",
+                     importantMs,
+                     capacityMs,
+                     fsMs,
+                     totalMs,
+                     error.localizedDescription.UTF8String ?: "none");
+        }
+        return @"Disk --";
+    }
+    NSString *text = [NSString stringWithFormat:@"Disk %@", nbl_format_disk_bytes(freeBytes.unsignedLongLongValue)];
+    if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
+        NBL_DEBUG_LOG("[NICEBARLITE][DISK] source=filesystem bytes=%llu important=%llums available=%llums fs=%llums total=%llums\n",
+                 freeBytes.unsignedLongLongValue,
+                 importantMs,
+                 capacityMs,
+                 fsMs,
+                 totalMs);
+    }
+    return text;
 }
 
 static NSString *nbl_thermal_state_text(const char *language)
@@ -651,36 +822,13 @@ static bool nbl_send_rect_main(uint64_t obj, const char *selName,
     return true;
 }
 
-static void nbl_make_label_click_through(uint64_t label)
-{
-    if (!r_is_objc_ptr(label)) return;
-    r_msg2_main(label, "setUserInteractionEnabled:", 0, 0, 0, 0);
-    r_msg2_main(label, "setMultipleTouchEnabled:", 0, 0, 0, 0);
-    r_msg2_main(label, "setExclusiveTouch:", 0, 0, 0, 0);
-}
-
 static void nbl_make_window_click_through(uint64_t win)
 {
     if (!r_is_objc_ptr(win)) return;
     r_msg2_main(win, "setUserInteractionEnabled:", 0, 0, 0, 0);
-    r_msg2_main(win, "setMultipleTouchEnabled:", 0, 0, 0, 0);
-    r_msg2_main(win, "setExclusiveTouch:", 0, 0, 0, 0);
-
-    const char *selectors[] = {
-        "_setWindowIgnoresHitTest:",
-        "setWindowIgnoresHitTest:",
-        "_setIgnoresHitTesting:",
-        "setIgnoresHitTesting:",
-        "setIgnoresHitTest:",
-    };
-    for (size_t i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
-        if (r_responds_main(win, selectors[i])) {
-            r_msg2_main(win, selectors[i], 1, 0, 0, 0);
-        }
-    }
 }
 
-static void nbl_purge_legacy_window_labels(void)
+static void nbl_purge_legacy_window_views(void)
 {
     if (!r_is_objc_ptr(gNBLWindow)) return;
     uint64_t subviews = r_msg2_main(gNBLWindow, "subviews", 0, 0, 0, 0);
@@ -692,7 +840,9 @@ static void nbl_purge_legacy_window_labels(void)
         uint64_t child = r_msg2_main(subviews, "objectAtIndex:", idx - 1, 0, 0, 0);
         if (!r_is_objc_ptr(child)) continue;
         uint64_t tag = r_msg2_main(child, "tag", 0, 0, 0, 0);
-        if (tag >= kNBLBaseTag && tag < kNBLBaseTag + NiceBarLiteSlotCount) {
+        BOOL isLegacyLabel = tag >= kNBLBaseTag && tag < kNBLBaseTag + NiceBarLiteSlotCount;
+        BOOL isLegacyPill = tag >= kNBLPillTagBase && tag < kNBLPillTagBase + NiceBarLiteSlotCount;
+        if (isLegacyLabel || isLegacyPill) {
             r_msg2_main(child, "setHidden:", 1, 0, 0, 0);
             r_msg2_main(child, "removeFromSuperview", 0, 0, 0, 0);
         }
@@ -803,7 +953,6 @@ static double nbl_side_margin_for_slot(NiceBarLiteSlot slot)
 static void nbl_apply_label_style(uint64_t label, NiceBarLiteSlot slot)
 {
     if (!r_is_objc_ptr(label)) return;
-    nbl_make_label_click_through(label);
 
     if (!r_is_objc_ptr(gNBLUIFontClass)) gNBLUIFontClass = r_class("UIFont");
     if (r_is_objc_ptr(gNBLUIFontClass)) {
@@ -828,31 +977,10 @@ static void nbl_apply_label_style(uint64_t label, NiceBarLiteSlot slot)
 
     uint64_t color = nbl_status_text_color();
     if (r_is_objc_ptr(color)) r_msg2_main(label, "setTextColor:", color, 0, 0, 0);
-    if (!r_is_objc_ptr(gNBLUIColorClass)) gNBLUIColorClass = r_class("UIColor");
-    if (r_is_objc_ptr(gNBLUIColorClass) && !r_is_objc_ptr(gNBLClearColor)) {
-        gNBLClearColor = r_msg2_main(gNBLUIColorClass, "clearColor", 0, 0, 0, 0);
-    }
-    if (r_is_objc_ptr(gNBLClearColor)) r_msg2_main(label, "setBackgroundColor:", gNBLClearColor, 0, 0, 0);
-    r_msg2_main(label, "setOpaque:", 0, 0, 0, 0);
-    if (r_responds_main(label, "setClearsContextBeforeDrawing:")) {
-        r_msg2_main(label, "setClearsContextBeforeDrawing:", 1, 0, 0, 0);
-    }
-    r_msg2_main(label, "setClipsToBounds:", 1, 0, 0, 0);
-    r_msg2_main(label, "setAdjustsFontSizeToFitWidth:", 1, 0, 0, 0);
-    r_msg2_main(label, "setLineBreakMode:", 2, 0, 0, 0); // NSLineBreakByClipping
-}
-
-static void nbl_apply_pill_style(uint64_t pill)
-{
-    if (!r_is_objc_ptr(pill)) return;
-    nbl_make_label_click_through(pill);
-
     uint64_t fill = nbl_pill_fill_color();
-    if (r_is_objc_ptr(fill)) r_msg2_main(pill, "setBackgroundColor:", fill, 0, 0, 0);
-    r_msg2_main(pill, "setOpaque:", 0, 0, 0, 0);
-    r_msg2_main(pill, "setClipsToBounds:", 1, 0, 0, 0);
+    if (r_is_objc_ptr(fill)) r_msg2_main(label, "setBackgroundColor:", fill, 0, 0, 0);
 
-    uint64_t layer = r_msg2_main(pill, "layer", 0, 0, 0, 0);
+    uint64_t layer = r_msg2_main(label, "layer", 0, 0, 0, 0);
     if (r_is_objc_ptr(layer)) {
         double radius = kNBLCornerRadius;
         double borderWidth = 0.5;
@@ -876,34 +1004,6 @@ static void nbl_refresh_text_colors(void)
             r_msg2_main(gNBLLabels[i], "setTextColor:", color, 0, 0, 0);
         }
     }
-}
-
-static uint64_t nbl_ensure_pill(NiceBarLiteSlot slot)
-{
-    if (slot < 0 || slot >= NiceBarLiteSlotCount) return 0;
-    if (r_is_objc_ptr(gNBLPills[slot])) return gNBLPills[slot];
-    if (!nbl_create_or_fetch_window()) return 0;
-
-    uint64_t existing = r_msg2_main(gNBLWindow, "viewWithTag:", kNBLPillTagBase + slot, 0, 0, 0);
-    if (r_is_objc_ptr(existing)) {
-        gNBLPills[slot] = existing;
-        nbl_apply_pill_style(existing);
-        return existing;
-    }
-
-    if (!r_is_objc_ptr(gNBLUIViewClass)) gNBLUIViewClass = r_class("UIView");
-    uint64_t alloc = r_is_objc_ptr(gNBLUIViewClass)
-        ? r_msg2_main(gNBLUIViewClass, "alloc", 0, 0, 0, 0)
-        : 0;
-    uint64_t pill = r_is_objc_ptr(alloc) ? r_msg2_main(alloc, "init", 0, 0, 0, 0) : 0;
-    if (!r_is_objc_ptr(pill)) return 0;
-
-    r_msg2_main(pill, "setTag:", kNBLPillTagBase + slot, 0, 0, 0);
-    r_msg2_main(pill, "setHidden:", 1, 0, 0, 0);
-    nbl_apply_pill_style(pill);
-    r_msg2_main(gNBLWindow, "addSubview:", pill, 0, 0, 0);
-    gNBLPills[slot] = pill;
-    return pill;
 }
 
 static double nbl_measure_text_width(NSString *text, NiceBarLiteSlot slot)
@@ -965,18 +1065,6 @@ static NBLRect nbl_rect_for_slot(NiceBarLiteSlot slot,
     return (NBLRect){ floor(x), floor(y), width, kNBLWinH };
 }
 
-static bool nbl_layout_slot(uint64_t label,
-                            NiceBarLiteSlot slot,
-                            NiceBarLiteSlotConfig config,
-                            NSString *text,
-                            NBLLayout layout)
-{
-    if (!r_is_objc_ptr(label)) return false;
-    NBLRect rect = nbl_rect_for_slot(slot, config, text, layout);
-    r_msg2_main(label, "setTextAlignment:", 1, 0, 0, 0);
-    return nbl_send_rect_main(label, "setFrame:", rect.x, rect.y, rect.width, rect.height);
-}
-
 static bool nbl_create_or_fetch_window(void)
 {
     if (r_is_objc_ptr(gNBLWindow)) return true;
@@ -993,7 +1081,7 @@ static bool nbl_create_or_fetch_window(void)
     if (r_is_objc_ptr(cached)) {
         gNBLWindow = cached;
         nbl_make_window_click_through(gNBLWindow);
-        nbl_purge_legacy_window_labels();
+        nbl_purge_legacy_window_views();
         return true;
     }
 
@@ -1025,7 +1113,7 @@ static bool nbl_create_or_fetch_window(void)
 
     r_dlsym_call(R_TIMEOUT, "objc_setAssociatedObject", app, assocKey, win, 1, 0, 0, 0, 0);
     gNBLWindow = win;
-    nbl_purge_legacy_window_labels();
+    nbl_purge_legacy_window_views();
     return true;
 }
 
@@ -1033,19 +1121,9 @@ static uint64_t nbl_ensure_label(NiceBarLiteSlot slot)
 {
     if (slot < 0 || slot >= NiceBarLiteSlotCount) return 0;
     if (r_is_objc_ptr(gNBLLabels[slot])) return gNBLLabels[slot];
-    uint64_t pill = nbl_ensure_pill(slot);
-    if (!r_is_objc_ptr(pill)) return 0;
+    if (!nbl_create_or_fetch_window()) return 0;
 
-    uint64_t existing = r_msg2_main(pill, "viewWithTag:", kNBLBaseTag + slot, 0, 0, 0);
-    if (!r_is_objc_ptr(existing) && r_is_objc_ptr(gNBLWindow)) {
-        existing = r_msg2_main(gNBLWindow, "viewWithTag:", kNBLBaseTag + slot, 0, 0, 0);
-        if (r_is_objc_ptr(existing)) {
-            r_msg2_main(existing, "removeFromSuperview", 0, 0, 0, 0);
-            uint64_t content = r_msg2_main(pill, "contentView", 0, 0, 0, 0);
-            uint64_t parent = r_is_objc_ptr(content) ? content : pill;
-            r_msg2_main(parent, "addSubview:", existing, 0, 0, 0);
-        }
-    }
+    uint64_t existing = r_msg2_main(gNBLWindow, "viewWithTag:", kNBLBaseTag + slot, 0, 0, 0);
     if (r_is_objc_ptr(existing)) {
         gNBLLabels[slot] = existing;
         gNBLHasLastLayout[slot] = NO;
@@ -1061,13 +1139,9 @@ static uint64_t nbl_ensure_label(NiceBarLiteSlot slot)
     if (!r_is_objc_ptr(label)) return 0;
 
     r_msg2_main(label, "setTag:", kNBLBaseTag + slot, 0, 0, 0);
-    r_msg2_main(label, "setTextAlignment:", 1, 0, 0, 0);
-    r_msg2_main(label, "setNumberOfLines:", 1, 0, 0, 0);
     r_msg2_main(label, "setHidden:", 1, 0, 0, 0);
     nbl_apply_label_style(label, slot);
-    uint64_t content = r_msg2_main(pill, "contentView", 0, 0, 0, 0);
-    uint64_t parent = r_is_objc_ptr(content) ? content : pill;
-    r_msg2_main(parent, "addSubview:", label, 0, 0, 0);
+    r_msg2_main(gNBLWindow, "addSubview:", label, 0, 0, 0);
 
     gNBLLabels[slot] = label;
     gNBLHasLastLayout[slot] = NO;
@@ -1077,44 +1151,143 @@ static uint64_t nbl_ensure_label(NiceBarLiteSlot slot)
 
 bool nicebarlite_apply_in_session(NiceBarLiteConfig config)
 {
+    uint64_t applyStartUs = nbl_now_us();
     gNBLApplyTick++;
-    nbl_prepare_tick_metrics();
+    uint32_t oldSettleUS = r_settle_us(0);
     uint32_t updateMask = config.updateMask;
     BOOL updateAll = (updateMask == 0);
+    BOOL trace = nbl_should_trace_apply();
+
+    if (trace) {
+        NBL_DEBUG_LOG("[NICEBARLITE][APPLY] start tick=%llu updateMask=0x%08x updateAll=%d celsius=%d settleUS=%u->0\n",
+                 (unsigned long long)gNBLApplyTick,
+                 updateMask,
+                 updateAll ? 1 : 0,
+                 config.celsius ? 1 : 0,
+                 oldSettleUS);
+    }
+
+    uint64_t metricsStartUs = nbl_now_us();
+    nbl_prepare_tick_metrics();
+    unsigned long long metricsMs = nbl_elapsed_ms_since(metricsStartUs);
+    if (trace || metricsMs >= kNBLSlowLogMs) {
+        NBL_DEBUG_LOG("[NICEBARLITE][METRICS] tick=%llu down=%.1fKB/s up=%.1fKB/s elapsed=%llums\n",
+                 (unsigned long long)gNBLApplyTick,
+                 gNBLTickDownKB,
+                 gNBLTickUpKB,
+                 metricsMs);
+    }
 
     NSString *texts[NiceBarLiteSlotCount] = { nil };
     BOOL hidden[NiceBarLiteSlotCount] = { NO };
     BOOL hasVisibleSlot = NO;
+    uint64_t textAllStartUs = nbl_now_us();
     for (int i = 0; i < NiceBarLiteSlotCount; i++) {
-        if (!updateAll && ((updateMask & (1u << i)) == 0)) continue;
+        if (!updateAll && ((updateMask & (1u << i)) == 0)) {
+            if (trace) {
+                NBL_DEBUG_LOG("[NICEBARLITE][TEXT] skip slot=%s updateMask=0x%08x\n",
+                         nbl_slot_name(i),
+                         updateMask);
+            }
+            continue;
+        }
+        uint64_t textStartUs = nbl_now_us();
         texts[i] = nbl_text_for_slot(config.slots[i], config.celsius);
+        unsigned long long textMs = nbl_elapsed_ms_since(textStartUs);
         hidden[i] = texts[i].length == 0;
         if (!hidden[i]) hasVisibleSlot = YES;
+        if (trace || textMs >= kNBLSlowLogMs) {
+            const char *item = config.slots[i].kind == NiceBarLiteContentSystem
+                ? nbl_system_item_name(config.slots[i].systemItem)
+                : "-";
+            const char *language = (config.slots[i].systemLanguage && config.slots[i].systemLanguage[0])
+                ? config.slots[i].systemLanguage
+                : "-";
+            NBL_DEBUG_LOG("[NICEBARLITE][TEXT] slot=%s kind=%s item=%s lang=%s len=%lu hidden=%d elapsed=%llums\n",
+                     nbl_slot_name(i),
+                     nbl_kind_name(config.slots[i].kind),
+                     item,
+                     language,
+                     (unsigned long)texts[i].length,
+                     hidden[i] ? 1 : 0,
+                     textMs);
+        }
+    }
+    unsigned long long textAllMs = nbl_elapsed_ms_since(textAllStartUs);
+    if (trace || textAllMs >= kNBLSlowLogMs) {
+        NBL_DEBUG_LOG("[NICEBARLITE][TEXT] total=%llums visible=%d\n",
+                 textAllMs,
+                 hasVisibleSlot ? 1 : 0);
     }
 
     if (updateAll && !hasVisibleSlot) {
+        uint64_t hideStartUs = nbl_now_us();
+        BOOL hidWindow = NO;
+        int hidSlots = 0;
         if (r_is_objc_ptr(gNBLWindow) && gNBLWindowVisible) {
             r_msg2_main(gNBLWindow, "setHidden:", 1, 0, 0, 0);
             gNBLWindowVisible = NO;
+            hidWindow = YES;
         }
         for (int i = 0; i < NiceBarLiteSlotCount; i++) {
-            uint64_t view = r_is_objc_ptr(gNBLPills[i]) ? gNBLPills[i] : gNBLLabels[i];
+            uint64_t view = gNBLLabels[i];
             if (r_is_objc_ptr(view) && (!gNBLHasLastLayout[i] || !gNBLLastHidden[i])) {
                 r_msg2_main(view, "setHidden:", 1, 0, 0, 0);
                 gNBLLastHidden[i] = YES;
                 gNBLHasLastLayout[i] = YES;
+                hidSlots++;
             }
         }
+        unsigned long long hideMs = nbl_elapsed_ms_since(hideStartUs);
+        unsigned long long totalMs = nbl_elapsed_ms_since(applyStartUs);
+        if (trace || hideMs >= kNBLSlowLogMs || totalMs >= kNBLSlowLogMs) {
+            NBL_DEBUG_LOG("[NICEBARLITE][APPLY] end tick=%llu ok=1 reason=no-visible hideWindow=%d hideSlots=%d hide=%llums total=%llums\n",
+                     (unsigned long long)gNBLApplyTick,
+                     hidWindow ? 1 : 0,
+                     hidSlots,
+                     hideMs,
+                     totalMs);
+        }
+        r_settle_us(oldSettleUS);
         return true;
     }
 
+    BOOL hadWindowPointer = (gNBLWindow != 0);
+    uint64_t windowStartUs = nbl_now_us();
     if (!nbl_create_or_fetch_window()) {
+        unsigned long long windowMs = nbl_elapsed_ms_since(windowStartUs);
+        unsigned long long totalMs = nbl_elapsed_ms_since(applyStartUs);
+        NBL_DEBUG_LOG("[NICEBARLITE][WINDOW] failed hadPointer=%d elapsed=%llums total=%llums\n",
+                 hadWindowPointer ? 1 : 0,
+                 windowMs,
+                 totalMs);
         printf("[NICEBARLITE] failed to create overlay window\n");
+        r_settle_us(oldSettleUS);
         return false;
     }
+    unsigned long long windowMs = nbl_elapsed_ms_since(windowStartUs);
+    if (trace || windowMs >= kNBLSlowLogMs) {
+        NBL_DEBUG_LOG("[NICEBARLITE][WINDOW] ok=1 hadPointer=%d ptr=0x%llx elapsed=%llums\n",
+                 hadWindowPointer ? 1 : 0,
+                 (unsigned long long)gNBLWindow,
+                 windowMs);
+    }
 
+    uint64_t layoutStartUs = nbl_now_us();
     NBLLayout layout = nbl_read_layout();
+    unsigned long long layoutMs = nbl_elapsed_ms_since(layoutStartUs);
+    if (trace || layoutMs >= kNBLSlowLogMs) {
+        NBL_DEBUG_LOG("[NICEBARLITE][LAYOUT] screen=%.1fx%.1f top=%.1f elapsed=%llums\n",
+                 layout.screenWidth,
+                 layout.screenHeight,
+                 layout.topAreaHeight,
+                 layoutMs);
+    }
     double windowH = layout.topAreaHeight + 24.0;
+    BOOL frameChanged = !gNBLHasWindowFrame ||
+                        fabs(gNBLLastWindowW - layout.screenWidth) > 0.5 ||
+                        fabs(gNBLLastWindowH - windowH) > 0.5;
+    uint64_t windowFrameStartUs = nbl_now_us();
     if (!gNBLHasWindowFrame ||
         fabs(gNBLLastWindowW - layout.screenWidth) > 0.5 ||
         fabs(gNBLLastWindowH - windowH) > 0.5) {
@@ -1124,36 +1297,71 @@ bool nicebarlite_apply_in_session(NiceBarLiteConfig config)
         gNBLLastWindowH = windowH;
         gNBLHasWindowFrame = YES;
     }
+    unsigned long long windowFrameMs = nbl_elapsed_ms_since(windowFrameStartUs);
+    if (trace || windowFrameMs >= kNBLSlowLogMs) {
+        NBL_DEBUG_LOG("[NICEBARLITE][WINDOW] frameChanged=%d width=%.1f height=%.1f elapsed=%llums\n",
+                 frameChanged ? 1 : 0,
+                 layout.screenWidth,
+                 windowH,
+                 windowFrameMs);
+    }
+    uint64_t colorStartUs = nbl_now_us();
+    BOOL refreshedColors = !gNBLWindowVisible;
     if (!gNBLWindowVisible) {
         nbl_refresh_text_colors();
     }
+    unsigned long long colorMs = nbl_elapsed_ms_since(colorStartUs);
+    if ((refreshedColors && trace) || colorMs >= kNBLSlowLogMs) {
+        NBL_DEBUG_LOG("[NICEBARLITE][COLORS] refreshed=%d elapsed=%llums\n",
+                 refreshedColors ? 1 : 0,
+                 colorMs);
+    }
 
     bool ok = true;
+    uint64_t slotsStartUs = nbl_now_us();
     for (int i = 0; i < NiceBarLiteSlotCount; i++) {
         if (!updateAll && ((updateMask & (1u << i)) == 0)) continue;
+        uint64_t slotStartUs = nbl_now_us();
         NSString *text = texts[i];
         uint64_t label = gNBLLabels[i];
         if (hidden[i]) {
-            uint64_t view = r_is_objc_ptr(gNBLPills[i]) ? gNBLPills[i] : label;
+            BOOL hiddenChangedNow = NO;
+            uint64_t view = label;
             if (r_is_objc_ptr(view) && (!gNBLHasLastLayout[i] || !gNBLLastHidden[i])) {
                 r_msg2_main(view, "setHidden:", 1, 0, 0, 0);
                 gNBLLastHidden[i] = YES;
                 gNBLHasLastLayout[i] = YES;
+                hiddenChangedNow = YES;
+            }
+            unsigned long long slotMs = nbl_elapsed_ms_since(slotStartUs);
+            if (trace || slotMs >= kNBLSlowLogMs) {
+                NBL_DEBUG_LOG("[NICEBARLITE][SLOT] slot=%s hidden=1 changed=%d total=%llums\n",
+                         nbl_slot_name(i),
+                         hiddenChangedNow ? 1 : 0,
+                         slotMs);
             }
             continue;
         }
 
+        uint64_t ensureStartUs = nbl_now_us();
         label = nbl_ensure_label((NiceBarLiteSlot)i);
+        unsigned long long ensureMs = nbl_elapsed_ms_since(ensureStartUs);
         if (!r_is_objc_ptr(label)) {
             ok = false;
+            unsigned long long slotMs = nbl_elapsed_ms_since(slotStartUs);
+            NBL_DEBUG_LOG("[NICEBARLITE][SLOT] slot=%s failed=ensure-label ensure=%llums total=%llums\n",
+                     nbl_slot_name(i),
+                     ensureMs,
+                     slotMs);
             continue;
         }
-        uint64_t pill = gNBLPills[i];
-        if (!r_is_objc_ptr(pill)) pill = label;
-
         BOOL networkSpeed = nbl_slot_is_network_speed(config.slots[i]);
+        uint64_t styleStartUs = nbl_now_us();
         r_msg2_main(label, "setAdjustsFontSizeToFitWidth:", networkSpeed ? 0 : 1, 0, 0, 0);
+        unsigned long long styleMs = nbl_elapsed_ms_since(styleStartUs);
+        uint64_t rectStartUs = nbl_now_us();
         NBLRect rect = nbl_rect_for_slot((NiceBarLiteSlot)i, config.slots[i], text, layout);
+        unsigned long long rectMs = nbl_elapsed_ms_since(rectStartUs);
         BOOL textChanged = !gNBLLastText[i] || ![gNBLLastText[i] isEqualToString:text];
         BOOL layoutChanged = !gNBLHasLastLayout[i] ||
                              fabs(gNBLLastX[i] - rect.x) > 0.5 ||
@@ -1161,41 +1369,97 @@ bool nicebarlite_apply_in_session(NiceBarLiteConfig config)
                              fabs(gNBLLastW[i] - rect.width) > 0.5;
         BOOL hiddenChanged = !gNBLHasLastLayout[i] || gNBLLastHidden[i] != hidden[i];
 
+        unsigned long long setTextMs = 0;
+        unsigned long long setFrameMs = 0;
+        unsigned long long setHiddenMs = 0;
+        BOOL textSetOK = YES;
         if (textChanged) {
+            uint64_t setTextStartUs = nbl_now_us();
             uint64_t textObj = nbl_nsstring_utf8_fast(text.UTF8String);
             if (!r_is_objc_ptr(textObj)) {
                 ok = false;
+                textSetOK = NO;
             } else {
-                ok &= nbl_set_text_fast(label, textObj);
+                bool setOK = nbl_set_text_fast(label, textObj);
+                ok &= setOK;
+                textSetOK = setOK ? YES : NO;
                 nbl_release_remote_obj(textObj);
                 gNBLLastText[i] = [text copy];
             }
+            setTextMs = nbl_elapsed_ms_since(setTextStartUs);
         }
         if (layoutChanged) {
+            uint64_t setFrameStartUs = nbl_now_us();
             r_msg2_main(label, "setTextAlignment:", 1, 0, 0, 0);
-            ok &= nbl_send_rect_main(pill, "setFrame:", rect.x, rect.y, rect.width, rect.height);
-            ok &= nbl_send_rect_main(label, "setFrame:", 0.0, 0.0, rect.width, rect.height);
+            ok &= nbl_send_rect_main(label, "setFrame:", rect.x, rect.y, rect.width, rect.height);
             gNBLLastX[i] = rect.x;
             gNBLLastY[i] = rect.y;
             gNBLLastW[i] = rect.width;
+            setFrameMs = nbl_elapsed_ms_since(setFrameStartUs);
         }
         if (hiddenChanged) {
-            r_msg2_main(pill, "setHidden:", hidden[i] ? 1 : 0, 0, 0, 0);
+            uint64_t setHiddenStartUs = nbl_now_us();
             r_msg2_main(label, "setHidden:", hidden[i] ? 1 : 0, 0, 0, 0);
             gNBLLastHidden[i] = hidden[i];
+            setHiddenMs = nbl_elapsed_ms_since(setHiddenStartUs);
         }
         gNBLHasLastLayout[i] = YES;
+        unsigned long long slotMs = nbl_elapsed_ms_since(slotStartUs);
+        if (trace || slotMs >= kNBLSlowLogMs || !textSetOK) {
+            NBL_DEBUG_LOG("[NICEBARLITE][SLOT] slot=%s kind=%s item=%s len=%lu textChanged=%d layoutChanged=%d hiddenChanged=%d textOK=%d rect=%.0f,%.0f %.0fx%.0f ensure=%llums style=%llums measure=%llums setText=%llums setFrame=%llums setHidden=%llums total=%llums\n",
+                     nbl_slot_name(i),
+                     nbl_kind_name(config.slots[i].kind),
+                     config.slots[i].kind == NiceBarLiteContentSystem ? nbl_system_item_name(config.slots[i].systemItem) : "-",
+                     (unsigned long)text.length,
+                     textChanged ? 1 : 0,
+                     layoutChanged ? 1 : 0,
+                     hiddenChanged ? 1 : 0,
+                     textSetOK ? 1 : 0,
+                     rect.x,
+                     rect.y,
+                     rect.width,
+                     rect.height,
+                     ensureMs,
+                     styleMs,
+                     rectMs,
+                     setTextMs,
+                     setFrameMs,
+                     setHiddenMs,
+                     slotMs);
+        }
+    }
+    unsigned long long slotsMs = nbl_elapsed_ms_since(slotsStartUs);
+    if (trace || slotsMs >= kNBLSlowLogMs) {
+        NBL_DEBUG_LOG("[NICEBARLITE][SLOTS] total=%llums ok=%d\n",
+                 slotsMs,
+                 ok ? 1 : 0);
     }
 
+    uint64_t unhideStartUs = nbl_now_us();
+    BOOL unhidWindow = NO;
     if (!gNBLWindowVisible) {
         r_msg2_main(gNBLWindow, "setHidden:", 0, 0, 0, 0);
         gNBLWindowVisible = YES;
+        unhidWindow = YES;
+    }
+    unsigned long long unhideMs = nbl_elapsed_ms_since(unhideStartUs);
+    unsigned long long totalMs = nbl_elapsed_ms_since(applyStartUs);
+
+    if (trace || totalMs >= kNBLSlowLogMs || !ok) {
+        NBL_DEBUG_LOG("[NICEBARLITE][APPLY] end tick=%llu ok=%d visible=%d unhidWindow=%d unhide=%llums total=%llums\n",
+                 (unsigned long long)gNBLApplyTick,
+                 ok ? 1 : 0,
+                 gNBLWindowVisible ? 1 : 0,
+                 unhidWindow ? 1 : 0,
+                 unhideMs,
+                 totalMs);
     }
 
     if (nbl_should_log_tick()) {
         printf("[NICEBARLITE] applied overlay screen=%.1fx%.1f top=%.1f ok=%d\n",
                layout.screenWidth, layout.screenHeight, layout.topAreaHeight, ok);
     }
+    r_settle_us(oldSettleUS);
     return ok;
 }
 
@@ -1223,7 +1487,6 @@ void nicebarlite_forget_remote_state(void)
 {
     gNBLWindow = 0;
     for (int i = 0; i < NiceBarLiteSlotCount; i++) {
-        gNBLPills[i] = 0;
         gNBLLabels[i] = 0;
         gNBLLastText[i] = nil;
         gNBLLastX[i] = 0.0;
@@ -1244,7 +1507,6 @@ void nicebarlite_forget_remote_state(void)
     gNBLInitUTF8Sel = 0;
     gNBLUIApplicationClass = 0;
     gNBLUIWindowClass = 0;
-    gNBLUIViewClass = 0;
     gNBLUILabelClass = 0;
     gNBLUIVisualEffectViewClass = 0;
     gNBLUIBlurEffectClass = 0;
