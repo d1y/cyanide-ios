@@ -52,9 +52,14 @@ static const double kNBLTopY = 0.0;
 static const double kNBLBottomY = 38.0;
 static const double kNBLTextHPad = 6.0;
 static const double kNBLMinWidth = 34.0;
-static const double kNBLCornerRadius = 5.0;
+static const double kNBLNetworkWidth = 91.0;
+static const double kNBLCornerRadius = 6.0;
+static const double kNBLPillFillAlpha = 0.92;
+static const double kNBLPillBorderAlpha = 0.42;
+static const uint64_t kNBLPillTagBase = 99640;
 
 static uint64_t gNBLWindow = 0;
+static uint64_t gNBLPills[NiceBarLiteSlotCount] = {0};
 static uint64_t gNBLLabels[NiceBarLiteSlotCount] = {0};
 static uint64_t gNBLSetTextSel = 0;
 static uint64_t gNBLSetTextColorSel = 0;
@@ -64,11 +69,17 @@ static uint64_t gNBLAllocSel = 0;
 static uint64_t gNBLInitUTF8Sel = 0;
 static uint64_t gNBLUIApplicationClass = 0;
 static uint64_t gNBLUIWindowClass = 0;
+static uint64_t gNBLUIViewClass = 0;
 static uint64_t gNBLUILabelClass = 0;
+static uint64_t gNBLUIVisualEffectViewClass = 0;
+static uint64_t gNBLUIBlurEffectClass = 0;
 static uint64_t gNBLUIFontClass = 0;
 static uint64_t gNBLUIColorClass = 0;
 static uint64_t gNBLBlackColor = 0;
 static uint64_t gNBLWhiteColor = 0;
+static uint64_t gNBLTextColor = 0;
+static uint64_t gNBLFillColor = 0;
+static uint64_t gNBLBorderColor = 0;
 static uint64_t gNBLClearColor = 0;
 static uint64_t gNBLFontNormal = 0;
 static uint64_t gNBLFontTop = 0;
@@ -231,8 +242,10 @@ static void nbl_prepare_tick_metrics(void)
 static NSString *nbl_format_speed(double kbValue)
 {
     if (!isfinite(kbValue) || kbValue < 0.0) kbValue = 0.0;
-    if (kbValue < 1024.0) return [NSString stringWithFormat:@"%lldK", (long long)llround(kbValue)];
-    return [NSString stringWithFormat:@"%.1fM", kbValue / 1024.0];
+    if (kbValue < 999.5) return [NSString stringWithFormat:@"%lldK", (long long)llround(kbValue)];
+    double mbValue = kbValue / 1024.0;
+    if (mbValue < 10.0) return [NSString stringWithFormat:@"%.1fM", mbValue];
+    return [NSString stringWithFormat:@"%.0fM", mbValue];
 }
 
 static NSString *nbl_lunar_date_text(void);
@@ -321,7 +334,7 @@ static NSString *nbl_system_text(int item, bool celsius)
         case NiceBarLiteSystemNetworkSpeed: {
             double down = gNBLTickDownKB;
             double up = gNBLTickUpKB;
-            return [NSString stringWithFormat:@"↓%@ ↑%@", nbl_format_speed(down), nbl_format_speed(up)];
+            return [NSString stringWithFormat:@"↓%@↑%@", nbl_format_speed(down), nbl_format_speed(up)];
         }
         case NiceBarLiteSystemUptime: {
             int minutes = nbl_read_uptime_minutes();
@@ -444,6 +457,26 @@ static void nbl_make_window_click_through(uint64_t win)
     }
 }
 
+static void nbl_purge_legacy_window_labels(void)
+{
+    if (!r_is_objc_ptr(gNBLWindow)) return;
+    uint64_t subviews = r_msg2_main(gNBLWindow, "subviews", 0, 0, 0, 0);
+    if (!r_is_objc_ptr(subviews)) return;
+    uint64_t count = r_msg2_main(subviews, "count", 0, 0, 0, 0);
+    if (count == 0 || count > 128) return;
+
+    for (uint64_t idx = count; idx > 0; idx--) {
+        uint64_t child = r_msg2_main(subviews, "objectAtIndex:", idx - 1, 0, 0, 0);
+        if (!r_is_objc_ptr(child)) continue;
+        uint64_t tag = r_msg2_main(child, "tag", 0, 0, 0, 0);
+        if (tag >= kNBLBaseTag && tag < kNBLBaseTag + NiceBarLiteSlotCount) {
+            r_msg2_main(child, "setHidden:", 1, 0, 0, 0);
+            r_msg2_main(child, "removeFromSuperview", 0, 0, 0, 0);
+        }
+    }
+}
+
+static bool nbl_create_or_fetch_window(void);
 static uint64_t nbl_nsstring_utf8_fast(const char *cstr)
 {
     if (!cstr) cstr = "";
@@ -481,10 +514,53 @@ static uint64_t nbl_status_text_color(void)
 {
     if (!r_is_objc_ptr(gNBLUIColorClass)) gNBLUIColorClass = r_class("UIColor");
     if (!r_is_objc_ptr(gNBLUIColorClass)) return 0;
+    if (!r_is_objc_ptr(gNBLTextColor)) {
+        double white = 1.0;
+        double alpha = 0.96;
+        gNBLTextColor = r_msg2_main_raw(gNBLUIColorClass, "colorWithWhite:alpha:",
+                                        &white, sizeof(white),
+                                        &alpha, sizeof(alpha),
+                                        NULL, 0, NULL, 0);
+    }
+    if (r_is_objc_ptr(gNBLTextColor)) return gNBLTextColor;
     if (!r_is_objc_ptr(gNBLWhiteColor)) {
         gNBLWhiteColor = r_msg2_main(gNBLUIColorClass, "whiteColor", 0, 0, 0, 0);
     }
     return gNBLWhiteColor;
+}
+
+static uint64_t nbl_pill_fill_color(void)
+{
+    if (!r_is_objc_ptr(gNBLUIColorClass)) gNBLUIColorClass = r_class("UIColor");
+    if (!r_is_objc_ptr(gNBLUIColorClass)) return 0;
+    if (!r_is_objc_ptr(gNBLFillColor)) {
+        double white = 0.0;
+        double alpha = kNBLPillFillAlpha;
+        gNBLFillColor = r_msg2_main_raw(gNBLUIColorClass, "colorWithWhite:alpha:",
+                                        &white, sizeof(white),
+                                        &alpha, sizeof(alpha),
+                                        NULL, 0, NULL, 0);
+    }
+    if (r_is_objc_ptr(gNBLFillColor)) return gNBLFillColor;
+    if (!r_is_objc_ptr(gNBLBlackColor)) {
+        gNBLBlackColor = r_msg2_main(gNBLUIColorClass, "blackColor", 0, 0, 0, 0);
+    }
+    return gNBLBlackColor;
+}
+
+static uint64_t nbl_pill_border_color(void)
+{
+    if (!r_is_objc_ptr(gNBLUIColorClass)) gNBLUIColorClass = r_class("UIColor");
+    if (!r_is_objc_ptr(gNBLUIColorClass)) return 0;
+    if (!r_is_objc_ptr(gNBLBorderColor)) {
+        double white = 0.72;
+        double alpha = kNBLPillBorderAlpha;
+        gNBLBorderColor = r_msg2_main_raw(gNBLUIColorClass, "colorWithWhite:alpha:",
+                                          &white, sizeof(white),
+                                          &alpha, sizeof(alpha),
+                                          NULL, 0, NULL, 0);
+    }
+    return gNBLBorderColor;
 }
 
 static double nbl_font_size_for_slot(NiceBarLiteSlot slot)
@@ -527,25 +603,44 @@ static void nbl_apply_label_style(uint64_t label, NiceBarLiteSlot slot)
         if (r_is_objc_ptr(*fontCache)) r_msg2_main(label, "setFont:", *fontCache, 0, 0, 0);
     }
 
-    if (!r_is_objc_ptr(gNBLUIColorClass)) gNBLUIColorClass = r_class("UIColor");
-    if (r_is_objc_ptr(gNBLUIColorClass)) {
-        if (!r_is_objc_ptr(gNBLBlackColor)) {
-            gNBLBlackColor = r_msg2_main(gNBLUIColorClass, "blackColor", 0, 0, 0, 0);
-        }
-        if (r_is_objc_ptr(gNBLBlackColor)) r_msg2_main(label, "setBackgroundColor:", gNBLBlackColor, 0, 0, 0);
-    }
-
     uint64_t color = nbl_status_text_color();
     if (r_is_objc_ptr(color)) r_msg2_main(label, "setTextColor:", color, 0, 0, 0);
+    if (!r_is_objc_ptr(gNBLUIColorClass)) gNBLUIColorClass = r_class("UIColor");
+    if (r_is_objc_ptr(gNBLUIColorClass) && !r_is_objc_ptr(gNBLClearColor)) {
+        gNBLClearColor = r_msg2_main(gNBLUIColorClass, "clearColor", 0, 0, 0, 0);
+    }
+    if (r_is_objc_ptr(gNBLClearColor)) r_msg2_main(label, "setBackgroundColor:", gNBLClearColor, 0, 0, 0);
+    r_msg2_main(label, "setOpaque:", 0, 0, 0, 0);
+    if (r_responds_main(label, "setClearsContextBeforeDrawing:")) {
+        r_msg2_main(label, "setClearsContextBeforeDrawing:", 1, 0, 0, 0);
+    }
     r_msg2_main(label, "setClipsToBounds:", 1, 0, 0, 0);
     r_msg2_main(label, "setAdjustsFontSizeToFitWidth:", 1, 0, 0, 0);
     r_msg2_main(label, "setLineBreakMode:", 2, 0, 0, 0); // NSLineBreakByClipping
+}
 
-    uint64_t layer = r_msg2_main(label, "layer", 0, 0, 0, 0);
+static void nbl_apply_pill_style(uint64_t pill)
+{
+    if (!r_is_objc_ptr(pill)) return;
+    nbl_make_label_click_through(pill);
+
+    uint64_t fill = nbl_pill_fill_color();
+    if (r_is_objc_ptr(fill)) r_msg2_main(pill, "setBackgroundColor:", fill, 0, 0, 0);
+    r_msg2_main(pill, "setOpaque:", 0, 0, 0, 0);
+    r_msg2_main(pill, "setClipsToBounds:", 1, 0, 0, 0);
+
+    uint64_t layer = r_msg2_main(pill, "layer", 0, 0, 0, 0);
     if (r_is_objc_ptr(layer)) {
         double radius = kNBLCornerRadius;
+        double borderWidth = 0.5;
         nbl_send_double_main(layer, "setCornerRadius:", radius);
         r_msg2_main(layer, "setMasksToBounds:", 1, 0, 0, 0);
+        nbl_send_double_main(layer, "setBorderWidth:", borderWidth);
+        uint64_t borderColor = nbl_pill_border_color();
+        if (r_is_objc_ptr(borderColor)) {
+            uint64_t cgColor = r_msg2_main(borderColor, "CGColor", 0, 0, 0, 0);
+            if (cgColor) r_msg2_main(layer, "setBorderColor:", cgColor, 0, 0, 0);
+        }
     }
 }
 
@@ -558,6 +653,34 @@ static void nbl_refresh_text_colors(void)
             r_msg2_main(gNBLLabels[i], "setTextColor:", color, 0, 0, 0);
         }
     }
+}
+
+static uint64_t nbl_ensure_pill(NiceBarLiteSlot slot)
+{
+    if (slot < 0 || slot >= NiceBarLiteSlotCount) return 0;
+    if (r_is_objc_ptr(gNBLPills[slot])) return gNBLPills[slot];
+    if (!nbl_create_or_fetch_window()) return 0;
+
+    uint64_t existing = r_msg2_main(gNBLWindow, "viewWithTag:", kNBLPillTagBase + slot, 0, 0, 0);
+    if (r_is_objc_ptr(existing)) {
+        gNBLPills[slot] = existing;
+        nbl_apply_pill_style(existing);
+        return existing;
+    }
+
+    if (!r_is_objc_ptr(gNBLUIViewClass)) gNBLUIViewClass = r_class("UIView");
+    uint64_t alloc = r_is_objc_ptr(gNBLUIViewClass)
+        ? r_msg2_main(gNBLUIViewClass, "alloc", 0, 0, 0, 0)
+        : 0;
+    uint64_t pill = r_is_objc_ptr(alloc) ? r_msg2_main(alloc, "init", 0, 0, 0, 0) : 0;
+    if (!r_is_objc_ptr(pill)) return 0;
+
+    r_msg2_main(pill, "setTag:", kNBLPillTagBase + slot, 0, 0, 0);
+    r_msg2_main(pill, "setHidden:", 1, 0, 0, 0);
+    nbl_apply_pill_style(pill);
+    r_msg2_main(gNBLWindow, "addSubview:", pill, 0, 0, 0);
+    gNBLPills[slot] = pill;
+    return pill;
 }
 
 static double nbl_measure_text_width(NSString *text, NiceBarLiteSlot slot)
@@ -573,22 +696,36 @@ static double nbl_measure_text_width(NSString *text, NiceBarLiteSlot slot)
     return ceil([text sizeWithAttributes:attrs].width);
 }
 
-static double nbl_width_for_text(NSString *text, NiceBarLiteSlot slot, NBLLayout layout)
+static BOOL nbl_slot_is_network_speed(NiceBarLiteSlotConfig slot)
+{
+    return slot.kind == NiceBarLiteContentSystem &&
+           slot.systemItem == NiceBarLiteSystemNetworkSpeed;
+}
+
+static double nbl_width_for_text(NSString *text,
+                                 NiceBarLiteSlot slot,
+                                 NiceBarLiteSlotConfig config,
+                                 NBLLayout layout)
 {
     if (text.length == 0) return 1.0;
     double maxWidth = slot == NiceBarLiteSlotBottomCenter
         ? (layout.screenWidth * 0.34)
         : (layout.screenWidth * 0.5) - nbl_side_margin_for_slot(slot) - 4.0;
     if (maxWidth < kNBLMinWidth) maxWidth = kNBLMinWidth;
-    double width = nbl_measure_text_width(text, slot) + (kNBLTextHPad * 2.0);
+    double width = nbl_slot_is_network_speed(config)
+        ? kNBLNetworkWidth
+        : nbl_measure_text_width(text, slot) + (kNBLTextHPad * 2.0);
     if (width < kNBLMinWidth) width = kNBLMinWidth;
     if (width > maxWidth) width = maxWidth;
     return width;
 }
 
-static NBLRect nbl_rect_for_slot(NiceBarLiteSlot slot, NSString *text, NBLLayout layout)
+static NBLRect nbl_rect_for_slot(NiceBarLiteSlot slot,
+                                 NiceBarLiteSlotConfig config,
+                                 NSString *text,
+                                 NBLLayout layout)
 {
-    double width = nbl_width_for_text(text, slot, layout);
+    double width = nbl_width_for_text(text, slot, config, layout);
     double x = 0.0;
     double sideMargin = nbl_side_margin_for_slot(slot);
     double y = (slot == NiceBarLiteSlotTopLeft || slot == NiceBarLiteSlotTopRight)
@@ -605,10 +742,14 @@ static NBLRect nbl_rect_for_slot(NiceBarLiteSlot slot, NSString *text, NBLLayout
     return (NBLRect){ floor(x), floor(y), width, kNBLWinH };
 }
 
-static bool nbl_layout_slot(uint64_t label, NiceBarLiteSlot slot, NSString *text, NBLLayout layout)
+static bool nbl_layout_slot(uint64_t label,
+                            NiceBarLiteSlot slot,
+                            NiceBarLiteSlotConfig config,
+                            NSString *text,
+                            NBLLayout layout)
 {
     if (!r_is_objc_ptr(label)) return false;
-    NBLRect rect = nbl_rect_for_slot(slot, text, layout);
+    NBLRect rect = nbl_rect_for_slot(slot, config, text, layout);
     r_msg2_main(label, "setTextAlignment:", 1, 0, 0, 0);
     return nbl_send_rect_main(label, "setFrame:", rect.x, rect.y, rect.width, rect.height);
 }
@@ -629,6 +770,7 @@ static bool nbl_create_or_fetch_window(void)
     if (r_is_objc_ptr(cached)) {
         gNBLWindow = cached;
         nbl_make_window_click_through(gNBLWindow);
+        nbl_purge_legacy_window_labels();
         return true;
     }
 
@@ -660,6 +802,7 @@ static bool nbl_create_or_fetch_window(void)
 
     r_dlsym_call(R_TIMEOUT, "objc_setAssociatedObject", app, assocKey, win, 1, 0, 0, 0, 0);
     gNBLWindow = win;
+    nbl_purge_legacy_window_labels();
     return true;
 }
 
@@ -667,9 +810,19 @@ static uint64_t nbl_ensure_label(NiceBarLiteSlot slot)
 {
     if (slot < 0 || slot >= NiceBarLiteSlotCount) return 0;
     if (r_is_objc_ptr(gNBLLabels[slot])) return gNBLLabels[slot];
-    if (!nbl_create_or_fetch_window()) return 0;
+    uint64_t pill = nbl_ensure_pill(slot);
+    if (!r_is_objc_ptr(pill)) return 0;
 
-    uint64_t existing = r_msg2_main(gNBLWindow, "viewWithTag:", kNBLBaseTag + slot, 0, 0, 0);
+    uint64_t existing = r_msg2_main(pill, "viewWithTag:", kNBLBaseTag + slot, 0, 0, 0);
+    if (!r_is_objc_ptr(existing) && r_is_objc_ptr(gNBLWindow)) {
+        existing = r_msg2_main(gNBLWindow, "viewWithTag:", kNBLBaseTag + slot, 0, 0, 0);
+        if (r_is_objc_ptr(existing)) {
+            r_msg2_main(existing, "removeFromSuperview", 0, 0, 0, 0);
+            uint64_t content = r_msg2_main(pill, "contentView", 0, 0, 0, 0);
+            uint64_t parent = r_is_objc_ptr(content) ? content : pill;
+            r_msg2_main(parent, "addSubview:", existing, 0, 0, 0);
+        }
+    }
     if (r_is_objc_ptr(existing)) {
         gNBLLabels[slot] = existing;
         gNBLHasLastLayout[slot] = NO;
@@ -689,7 +842,9 @@ static uint64_t nbl_ensure_label(NiceBarLiteSlot slot)
     r_msg2_main(label, "setNumberOfLines:", 1, 0, 0, 0);
     r_msg2_main(label, "setHidden:", 1, 0, 0, 0);
     nbl_apply_label_style(label, slot);
-    r_msg2_main(gNBLWindow, "addSubview:", label, 0, 0, 0);
+    uint64_t content = r_msg2_main(pill, "contentView", 0, 0, 0, 0);
+    uint64_t parent = r_is_objc_ptr(content) ? content : pill;
+    r_msg2_main(parent, "addSubview:", label, 0, 0, 0);
 
     gNBLLabels[slot] = label;
     gNBLHasLastLayout[slot] = NO;
@@ -720,8 +875,9 @@ bool nicebarlite_apply_in_session(NiceBarLiteConfig config)
             gNBLWindowVisible = NO;
         }
         for (int i = 0; i < NiceBarLiteSlotCount; i++) {
-            if (r_is_objc_ptr(gNBLLabels[i]) && (!gNBLHasLastLayout[i] || !gNBLLastHidden[i])) {
-                r_msg2_main(gNBLLabels[i], "setHidden:", 1, 0, 0, 0);
+            uint64_t view = r_is_objc_ptr(gNBLPills[i]) ? gNBLPills[i] : gNBLLabels[i];
+            if (r_is_objc_ptr(view) && (!gNBLHasLastLayout[i] || !gNBLLastHidden[i])) {
+                r_msg2_main(view, "setHidden:", 1, 0, 0, 0);
                 gNBLLastHidden[i] = YES;
                 gNBLHasLastLayout[i] = YES;
             }
@@ -756,8 +912,9 @@ bool nicebarlite_apply_in_session(NiceBarLiteConfig config)
         NSString *text = texts[i];
         uint64_t label = gNBLLabels[i];
         if (hidden[i]) {
-            if (r_is_objc_ptr(label) && (!gNBLHasLastLayout[i] || !gNBLLastHidden[i])) {
-                r_msg2_main(label, "setHidden:", 1, 0, 0, 0);
+            uint64_t view = r_is_objc_ptr(gNBLPills[i]) ? gNBLPills[i] : label;
+            if (r_is_objc_ptr(view) && (!gNBLHasLastLayout[i] || !gNBLLastHidden[i])) {
+                r_msg2_main(view, "setHidden:", 1, 0, 0, 0);
                 gNBLLastHidden[i] = YES;
                 gNBLHasLastLayout[i] = YES;
             }
@@ -769,8 +926,12 @@ bool nicebarlite_apply_in_session(NiceBarLiteConfig config)
             ok = false;
             continue;
         }
+        uint64_t pill = gNBLPills[i];
+        if (!r_is_objc_ptr(pill)) pill = label;
 
-        NBLRect rect = nbl_rect_for_slot((NiceBarLiteSlot)i, text, layout);
+        BOOL networkSpeed = nbl_slot_is_network_speed(config.slots[i]);
+        r_msg2_main(label, "setAdjustsFontSizeToFitWidth:", networkSpeed ? 0 : 1, 0, 0, 0);
+        NBLRect rect = nbl_rect_for_slot((NiceBarLiteSlot)i, config.slots[i], text, layout);
         BOOL textChanged = !gNBLLastText[i] || ![gNBLLastText[i] isEqualToString:text];
         BOOL layoutChanged = !gNBLHasLastLayout[i] ||
                              fabs(gNBLLastX[i] - rect.x) > 0.5 ||
@@ -790,12 +951,14 @@ bool nicebarlite_apply_in_session(NiceBarLiteConfig config)
         }
         if (layoutChanged) {
             r_msg2_main(label, "setTextAlignment:", 1, 0, 0, 0);
-            ok &= nbl_send_rect_main(label, "setFrame:", rect.x, rect.y, rect.width, rect.height);
+            ok &= nbl_send_rect_main(pill, "setFrame:", rect.x, rect.y, rect.width, rect.height);
+            ok &= nbl_send_rect_main(label, "setFrame:", 0.0, 0.0, rect.width, rect.height);
             gNBLLastX[i] = rect.x;
             gNBLLastY[i] = rect.y;
             gNBLLastW[i] = rect.width;
         }
         if (hiddenChanged) {
+            r_msg2_main(pill, "setHidden:", hidden[i] ? 1 : 0, 0, 0, 0);
             r_msg2_main(label, "setHidden:", hidden[i] ? 1 : 0, 0, 0, 0);
             gNBLLastHidden[i] = hidden[i];
         }
@@ -838,6 +1001,7 @@ void nicebarlite_forget_remote_state(void)
 {
     gNBLWindow = 0;
     for (int i = 0; i < NiceBarLiteSlotCount; i++) {
+        gNBLPills[i] = 0;
         gNBLLabels[i] = 0;
         gNBLLastText[i] = nil;
         gNBLLastX[i] = 0.0;
@@ -858,11 +1022,17 @@ void nicebarlite_forget_remote_state(void)
     gNBLInitUTF8Sel = 0;
     gNBLUIApplicationClass = 0;
     gNBLUIWindowClass = 0;
+    gNBLUIViewClass = 0;
     gNBLUILabelClass = 0;
+    gNBLUIVisualEffectViewClass = 0;
+    gNBLUIBlurEffectClass = 0;
     gNBLUIFontClass = 0;
     gNBLUIColorClass = 0;
     gNBLBlackColor = 0;
     gNBLWhiteColor = 0;
+    gNBLTextColor = 0;
+    gNBLFillColor = 0;
+    gNBLBorderColor = 0;
     gNBLClearColor = 0;
     gNBLFontNormal = 0;
     gNBLFontTop = 0;

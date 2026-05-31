@@ -27,6 +27,8 @@ static const double kNSBarTopY = 0.0;      // 顶部留 1px 间距
 static const double kNSBarBottomY = 38.0;  // 更靠下（从 28.0 改为 44.0）
 static const double kNSBarTextHPad = 7.0;
 static const double kNSBarMinWidth = 54.0;
+static const double kNSBarNetworkWidth = 104.0;
+static const double kNSBarPillBorderAlpha = 0.42;
 
 // Global state
 static uint64_t gNSBarApplyTick = 0;
@@ -40,6 +42,8 @@ static uint64_t gNSBarPerformMainSel = 0;
 static uint64_t gNSBarNSStringClass = 0;
 static uint64_t gNSBarAllocSel = 0;
 static uint64_t gNSBarInitUTF8Sel = 0;
+static uint64_t gNSBarUIColorClass = 0;
+static uint64_t gNSBarBorderColor = 0;
 
 typedef struct {
     double x;
@@ -116,11 +120,10 @@ static void read_net_speed_kbps(double *downKB, double *upKB)
 static NSString *format_net_speed(double kbValue)
 {
     if (!isfinite(kbValue) || kbValue < 0.0) kbValue = 0.0;
-    if (kbValue < 1024.0) {
-        return [NSString stringWithFormat:@"%lldKB", (long long)llround(kbValue)];
-    } else {
-        return [NSString stringWithFormat:@"%lldMB", (long long)llround(kbValue / 1024.0)];
-    }
+    if (kbValue < 999.5) return [NSString stringWithFormat:@"%lldK", (long long)llround(kbValue)];
+    double mbValue = kbValue / 1024.0;
+    if (mbValue < 10.0) return [NSString stringWithFormat:@"%.1fM", mbValue];
+    return [NSString stringWithFormat:@"%.0fM", mbValue];
 }
 
 static NSString *build_nsbar_text(void)
@@ -189,6 +192,22 @@ static bool r_send_rect_main(uint64_t obj, const char *selName,
     return true;
 }
 
+static uint64_t nsbar_pill_border_color(void)
+{
+    if (!r_is_objc_ptr(gNSBarUIColorClass)) gNSBarUIColorClass = r_class("UIColor");
+    if (!r_is_objc_ptr(gNSBarUIColorClass)) return 0;
+    if (!r_is_objc_ptr(gNSBarBorderColor)) {
+        double white = 0.72;
+        double alpha = kNSBarPillBorderAlpha;
+        gNSBarBorderColor = r_msg2_main_raw(gNSBarUIColorClass, "colorWithWhite:alpha:",
+                                            &white, sizeof(white),
+                                            &alpha, sizeof(alpha),
+                                            NULL, 0,
+                                            NULL, 0);
+    }
+    return gNSBarBorderColor;
+}
+
 static void nsbar_make_label_click_through(uint64_t label)
 {
     if (!r_is_objc_ptr(label)) return;
@@ -248,12 +267,21 @@ static void nsbar_apply_overlay_style(uint64_t label)
     if (r_is_objc_ptr(font)) {
         r_msg2_main(label, "setFont:", font, 0, 0, 0);
     }
+    r_msg2_main(label, "setAdjustsFontSizeToFitWidth:", 0, 0, 0, 0);
+    r_msg2_main(label, "setLineBreakMode:", 2, 0, 0, 0); // NSLineBreakByClipping
 
     uint64_t layer = r_msg2_main(label, "layer", 0, 0, 0, 0);
     if (r_is_objc_ptr(layer)) {
         double radius = kNSBarWinH / 2.0;
+        double borderWidth = 0.5;
         r_send_double_main(layer, "setCornerRadius:", radius);
         r_msg2_main(layer, "setMasksToBounds:", 1, 0, 0, 0);
+        r_send_double_main(layer, "setBorderWidth:", borderWidth);
+        uint64_t borderColor = nsbar_pill_border_color();
+        if (r_is_objc_ptr(borderColor)) {
+            uint64_t cgColor = r_msg2_main(borderColor, "CGColor", 0, 0, 0, 0);
+            if (cgColor) r_msg2_main(layer, "setBorderColor:", cgColor, 0, 0, 0);
+        }
     }
 }
 
@@ -279,7 +307,7 @@ static double nsbar_width_for_text(NSString *text, NSBarPosition position)
         : (screenWidth * 0.5) - kNSBarMargin - 4.0;
     if (maxWidth < kNSBarMinWidth) maxWidth = kNSBarMinWidth;
 
-    double width = nsbar_measure_text_width(text) + (kNSBarTextHPad * 2.0);
+    double width = kNSBarNetworkWidth;
     if (width < kNSBarMinWidth) width = kNSBarMinWidth;
     if (width > maxWidth) width = maxWidth;
     return width;
@@ -504,7 +532,7 @@ static bool nsbar_install_overlay(NSString *text, NSBarPosition position)
     r_msg2_main(label, "setTag:", kNSBarOverlayTag, 0, 0, 0);
     r_msg2_main(label, "setTextAlignment:", 1, 0, 0, 0);
     r_msg2_main(label, "setNumberOfLines:", 1, 0, 0, 0);
-    r_msg2_main(label, "setAdjustsFontSizeToFitWidth:", 1, 0, 0, 0);
+    r_msg2_main(label, "setAdjustsFontSizeToFitWidth:", 0, 0, 0, 0);
     r_msg2_main(label, "setLineBreakMode:", 2, 0, 0, 0);
 
     if (r_is_objc_ptr(UIColor)) {
@@ -576,5 +604,7 @@ void nsbar_forget_remote_state(void)
     gNSBarNSStringClass = 0;
     gNSBarAllocSel = 0;
     gNSBarInitUTF8Sel = 0;
+    gNSBarUIColorClass = 0;
+    gNSBarBorderColor = 0;
     printf("[NSBAR] forgot remote overlay state\n");
 }
