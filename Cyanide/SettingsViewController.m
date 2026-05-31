@@ -1759,67 +1759,67 @@ static NSString *settings_nicebar_weather_summary(NSInteger code, BOOL chinese)
 {
     if (chinese) {
         switch (code) {
-            case 0: return @"晴";
-            case 1: return @"多云转晴";
-            case 2: return @"局部多云";
-            case 3: return @"阴";
+            case 0: return @"☀️ 晴";
+            case 1: return @"🌤️ 晴转多云";
+            case 2: return @"⛅️ 局部多云";
+            case 3: return @"☁️ 阴";
             case 45:
-            case 48: return @"雾";
+            case 48: return @"🌫️ 雾";
             case 51:
             case 53:
-            case 55: return @"毛毛雨";
+            case 55: return @"🌦️ 毛毛雨";
             case 56:
-            case 57: return @"冻毛毛雨";
+            case 57: return @"🌧️ 冻毛毛雨";
             case 61:
             case 63:
-            case 65: return @"雨";
+            case 65: return @"🌧️ 雨";
             case 66:
-            case 67: return @"冻雨";
+            case 67: return @"🌧️ 冻雨";
             case 71:
             case 73:
             case 75:
-            case 77: return @"雪";
+            case 77: return @"❄️ 雪";
             case 80:
             case 81:
-            case 82: return @"阵雨";
+            case 82: return @"🌦️ 阵雨";
             case 85:
-            case 86: return @"阵雪";
-            case 95: return @"雷暴";
+            case 86: return @"🌨️ 阵雪";
+            case 95: return @"⛈️ 雷暴";
             case 96:
-            case 99: return @"雷暴冰雹";
-            default: return @"天气";
+            case 99: return @"⛈️ 雷暴冰雹";
+            default: return @"🌡️ 天气";
         }
     }
     switch (code) {
-        case 0: return @"Clear";
-        case 1: return @"Mostly clear";
-        case 2: return @"Partly cloudy";
-        case 3: return @"Cloudy";
+        case 0: return @"☀️ Clear";
+        case 1: return @"🌤️ Mostly clear";
+        case 2: return @"⛅️ Partly cloudy";
+        case 3: return @"☁️ Cloudy";
         case 45:
-        case 48: return @"Fog";
+        case 48: return @"🌫️ Fog";
         case 51:
         case 53:
-        case 55: return @"Drizzle";
+        case 55: return @"🌦️ Drizzle";
         case 56:
-        case 57: return @"Freezing drizzle";
+        case 57: return @"🌧️ Freezing drizzle";
         case 61:
         case 63:
-        case 65: return @"Rain";
+        case 65: return @"🌧️ Rain";
         case 66:
-        case 67: return @"Freezing rain";
+        case 67: return @"🌧️ Freezing rain";
         case 71:
         case 73:
         case 75:
-        case 77: return @"Snow";
+        case 77: return @"❄️ Snow";
         case 80:
         case 81:
-        case 82: return @"Rain showers";
+        case 82: return @"🌦️ Rain showers";
         case 85:
-        case 86: return @"Snow showers";
-        case 95: return @"Thunderstorm";
+        case 86: return @"🌨️ Snow showers";
+        case 95: return @"⛈️ Thunderstorm";
         case 96:
-        case 99: return @"Storm hail";
-        default: return @"Weather";
+        case 99: return @"⛈️ Storm hail";
+        default: return @"🌡️ Weather";
     }
 }
 
@@ -1835,8 +1835,7 @@ static NSString *settings_nicebar_weather_text_for_slot(NSUserDefaults *d, NSInt
     NSString *language = [d stringForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotWeatherLanguagePrefix, slot)] ?: @"en";
     BOOL chinese = [language isEqualToString:@"zh"];
     NSString *summary = settings_nicebar_weather_summary(codeNumber.integerValue, chinese);
-    NSString *suffix = [d boolForKey:kSettingsNiceBarLiteCelsius] ? @"C" : @"F";
-    return [NSString stringWithFormat:@"%@ %.0f%@", summary, tempNumber.doubleValue, suffix];
+    return [NSString stringWithFormat:@"%@ %.0f°", summary, tempNumber.doubleValue];
 }
 
 static void settings_nicebar_update_weather_slot_texts(NSUserDefaults *d)
@@ -1856,10 +1855,9 @@ static void settings_nicebar_store_weather_result(NSUserDefaults *d,
     if ([temp isKindOfClass:NSNumber.class] && [code isKindOfClass:NSNumber.class]) {
         [d setObject:temp forKey:kSettingsNiceBarLiteWeatherTemp];
         [d setObject:code forKey:kSettingsNiceBarLiteWeatherCode];
-        NSString *cache = [NSString stringWithFormat:@"%@ %.0f%@",
+        NSString *cache = [NSString stringWithFormat:@"%@ %.0f°",
                            settings_nicebar_weather_summary(code.integerValue, NO),
-                           temp.doubleValue,
-                           [d boolForKey:kSettingsNiceBarLiteCelsius] ? @"C" : @"F"];
+                           temp.doubleValue];
         [d setObject:cache forKey:kSettingsNiceBarLiteWeatherCache];
     } else {
         NSString *resolved = fallbackText.length ? fallbackText : @"Weather --";
@@ -6023,8 +6021,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
             NSNumber *code = [current isKindOfClass:NSDictionary.class] ? current[@"weather_code"] : nil;
             if ([temp isKindOfClass:NSNumber.class] && [code isKindOfClass:NSNumber.class]) {
                 NSString *summary = [_CyanideNiceBarWeatherRefresher summaryForWeatherCode:code.integerValue];
-                NSString *suffix = celsius ? @"C" : @"F";
-                text = [NSString stringWithFormat:@"%@ %.0f%@", summary, temp.doubleValue, suffix];
+                text = [NSString stringWithFormat:@"%@ %.0f°", summary, temp.doubleValue];
                 resolvedTemp = temp;
                 resolvedCode = code;
                 ok = YES;
@@ -6040,37 +6037,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
 
 + (NSString *)summaryForWeatherCode:(NSInteger)code
 {
-    switch (code) {
-        case 0: return @"Clear";
-        case 1: return @"Mostly clear";
-        case 2: return @"Partly cloudy";
-        case 3: return @"Cloudy";
-        case 45:
-        case 48: return @"Fog";
-        case 51:
-        case 53:
-        case 55: return @"Drizzle";
-        case 56:
-        case 57: return @"Freezing drizzle";
-        case 61:
-        case 63:
-        case 65: return @"Rain";
-        case 66:
-        case 67: return @"Freezing rain";
-        case 71:
-        case 73:
-        case 75:
-        case 77: return @"Snow";
-        case 80:
-        case 81:
-        case 82: return @"Rain showers";
-        case 85:
-        case 86: return @"Snow showers";
-        case 95: return @"Thunderstorm";
-        case 96:
-        case 99: return @"Storm hail";
-        default: return @"Weather";
-    }
+    return settings_nicebar_weather_summary(code, NO);
 }
 
 - (void)finishWithSuccess:(BOOL)ok text:(NSString *)text temp:(NSNumber *)temp code:(NSNumber *)code
