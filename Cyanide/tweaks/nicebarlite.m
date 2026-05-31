@@ -13,10 +13,12 @@
 #import <mach/mach.h>
 #import <mach/mach_host.h>
 #import <dlfcn.h>
+#import <arpa/inet.h>
 #import <ifaddrs.h>
 #import <math.h>
 #import <net/if.h>
 #import <net/if_dl.h>
+#import <netinet/in.h>
 #import <stdio.h>
 #import <string.h>
 #import <sys/sysctl.h>
@@ -124,30 +126,104 @@ static bool nbl_ensure_iokit_symbols(void)
            pIORegistryEntryCreateCFProperty && pIOObjectRelease;
 }
 
-static double nbl_read_battery_temp_c(void)
+static double nbl_read_battery_temp_c_local(void)
 {
-    static double cachedTempC = -1.0;
-    static time_t lastRead = 0;
-    time_t now = time(NULL);
-    if (lastRead != 0 && now >= lastRead && (now - lastRead) < 60) return cachedTempC;
-    lastRead = now;
-
-    if (!nbl_ensure_iokit_symbols()) return cachedTempC;
+    if (!nbl_ensure_iokit_symbols()) return -1.0;
     io_service_t svc = pIOServiceGetMatchingService(MACH_PORT_NULL,
                                                     pIOServiceMatching("AppleSmartBattery"));
-    if (svc == MACH_PORT_NULL) return cachedTempC;
+    if (svc == MACH_PORT_NULL) return -1.0;
 
+    double tempC = -1.0;
     CFNumberRef prop = (CFNumberRef)pIORegistryEntryCreateCFProperty(svc,
                                                                      CFSTR("Temperature"),
                                                                      kCFAllocatorDefault, 0);
     if (prop) {
         int64_t raw = 0;
         if (CFNumberGetValue(prop, kCFNumberSInt64Type, &raw)) {
-            cachedTempC = (double)raw / 100.0;
+            tempC = (double)raw / 100.0;
         }
         CFRelease(prop);
     }
     pIOObjectRelease(svc);
+    return tempC;
+}
+
+static bool nbl_ensure_remote_iokit_loaded(void)
+{
+    if (!nbl_ensure_iokit_symbols()) return false;
+    static bool remoteLoaded = false;
+    if (remoteLoaded) return true;
+
+    uint64_t path = r_alloc_str("/System/Library/Frameworks/IOKit.framework/IOKit");
+    if (!path) return false;
+    uint64_t handle = r_dlsym_call(R_TIMEOUT, "dlopen", path, RTLD_LAZY | RTLD_GLOBAL, 0, 0, 0, 0, 0, 0);
+    r_free(path);
+    remoteLoaded = (handle != 0);
+    return remoteLoaded;
+}
+
+static double nbl_read_battery_temp_c_remote(void)
+{
+    if (!nbl_ensure_remote_iokit_loaded()) return -1.0;
+
+    uint64_t name = r_alloc_str("AppleSmartBattery");
+    if (!name) return -1.0;
+    uint64_t dict = do_remote_call_stable_addr(R_TIMEOUT, (uint64_t)pIOServiceMatching, "IOServiceMatching",
+                                               name, 0, 0, 0, 0, 0, 0, 0);
+    r_free(name);
+    if (!dict) return -1.0;
+
+    uint64_t svc = do_remote_call_stable_addr(R_TIMEOUT, (uint64_t)pIOServiceGetMatchingService,
+                                              "IOServiceGetMatchingService",
+                                              MACH_PORT_NULL, dict, 0, 0, 0, 0, 0, 0);
+    if (!svc) return -1.0;
+
+    double tempC = -1.0;
+    uint64_t key = r_cfstr("Temperature");
+    if (key) {
+        uint64_t prop = do_remote_call_stable_addr(R_TIMEOUT, (uint64_t)pIORegistryEntryCreateCFProperty,
+                                                   "IORegistryEntryCreateCFProperty",
+                                                   svc, key, 0, 0, 0, 0, 0, 0);
+        if (prop) {
+            uint64_t scratch = r_dlsym_call(R_TIMEOUT, "malloc", 8, 0, 0, 0, 0, 0, 0, 0);
+            if (scratch) {
+                remote_write64(scratch, 0);
+                uint64_t ok = r_dlsym_call(R_TIMEOUT, "CFNumberGetValue", prop, 4, scratch, 0, 0, 0, 0, 0);
+                if (ok) {
+                    int64_t raw = (int64_t)remote_read64(scratch);
+                    tempC = (double)raw / 100.0;
+                }
+                r_free(scratch);
+            }
+            r_dlsym_call(R_TIMEOUT, "CFRelease", prop, 0, 0, 0, 0, 0, 0, 0);
+        }
+        r_dlsym_call(R_TIMEOUT, "CFRelease", key, 0, 0, 0, 0, 0, 0, 0);
+    }
+
+    do_remote_call_stable_addr(R_TIMEOUT, (uint64_t)pIOObjectRelease, "IOObjectRelease",
+                               svc, 0, 0, 0, 0, 0, 0, 0);
+    return tempC;
+}
+
+static double nbl_read_battery_temp_c(void)
+{
+    static double cachedTempC = -1.0;
+    static time_t lastRemoteRead = 0;
+
+    double localTempC = nbl_read_battery_temp_c_local();
+    if (localTempC > 0.0) {
+        cachedTempC = localTempC;
+        return cachedTempC;
+    }
+
+    time_t now = time(NULL);
+    if (lastRemoteRead != 0 && now >= lastRemoteRead && (now - lastRemoteRead) < 60) {
+        return cachedTempC;
+    }
+
+    lastRemoteRead = now;
+    double remoteTempC = nbl_read_battery_temp_c_remote();
+    if (remoteTempC > 0.0) cachedTempC = remoteTempC;
     return cachedTempC;
 }
 
@@ -248,6 +324,145 @@ static NSString *nbl_format_speed(double kbValue)
     return [NSString stringWithFormat:@"%.0fM", mbValue];
 }
 
+static NSString *nbl_format_bytes(uint64_t bytes)
+{
+    double value = (double)bytes;
+    if (value < 1024.0) return [NSString stringWithFormat:@"%lluB", (unsigned long long)bytes];
+    value /= 1024.0;
+    if (value < 1024.0) return [NSString stringWithFormat:@"%.0fK", value];
+    value /= 1024.0;
+    if (value < 1024.0) return [NSString stringWithFormat:@"%.1fM", value];
+    value /= 1024.0;
+    if (value < 10.0) return [NSString stringWithFormat:@"%.1fG", value];
+    return [NSString stringWithFormat:@"%.0fG", value];
+}
+
+static NSString *nbl_format_disk_bytes(uint64_t bytes)
+{
+    double value = (double)bytes;
+    if (value < 1000.0) return [NSString stringWithFormat:@"%lluB", (unsigned long long)bytes];
+    value /= 1000.0;
+    if (value < 1000.0) return [NSString stringWithFormat:@"%.0fK", value];
+    value /= 1000.0;
+    if (value < 1000.0) return [NSString stringWithFormat:@"%.1fM", value];
+    value /= 1000.0;
+    if (value < 100.0) return [NSString stringWithFormat:@"%.1fG", value];
+    return [NSString stringWithFormat:@"%.0fG", value];
+}
+
+static NSTimeInterval nbl_today_start_time(void)
+{
+    NSDate *start = nil;
+    if ([[NSCalendar currentCalendar] rangeOfUnit:NSCalendarUnitDay
+                                        startDate:&start
+                                         interval:NULL
+                                          forDate:[NSDate date]] && start) {
+        return start.timeIntervalSince1970;
+    }
+    return 0.0;
+}
+
+static NSString *nbl_today_traffic_text(void)
+{
+    static BOOL haveBaseline = NO;
+    static NSTimeInterval baselineDayStart = 0.0;
+    static uint64_t baselineIn = 0;
+    static uint64_t baselineOut = 0;
+
+    uint64_t totalIn = 0;
+    uint64_t totalOut = 0;
+    if (!nbl_read_net_totals(&totalIn, &totalOut)) return @"T --";
+
+    NSTimeInterval dayStart = nbl_today_start_time();
+    if (!haveBaseline ||
+        dayStart <= 0.0 ||
+        fabs(dayStart - baselineDayStart) > 1.0 ||
+        totalIn < baselineIn ||
+        totalOut < baselineOut) {
+        haveBaseline = YES;
+        baselineDayStart = dayStart;
+        baselineIn = totalIn;
+        baselineOut = totalOut;
+    }
+
+    uint64_t down = totalIn >= baselineIn ? totalIn - baselineIn : 0;
+    uint64_t up = totalOut >= baselineOut ? totalOut - baselineOut : 0;
+    return [NSString stringWithFormat:@"T %@", nbl_format_bytes(down + up)];
+}
+
+static NSString *nbl_current_ip_text(void)
+{
+    struct ifaddrs *head = NULL;
+    if (getifaddrs(&head) != 0) return @"IP --";
+
+    NSString *wifiIP = nil;
+    NSString *fallbackIP = nil;
+    char addr[INET_ADDRSTRLEN] = {0};
+
+    for (struct ifaddrs *ifa = head; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_addr || !ifa->ifa_name) continue;
+        if (ifa->ifa_addr->sa_family != AF_INET) continue;
+        if ((ifa->ifa_flags & IFF_LOOPBACK) != 0) continue;
+
+        struct sockaddr_in *sin = (struct sockaddr_in *)ifa->ifa_addr;
+        if (!inet_ntop(AF_INET, &sin->sin_addr, addr, sizeof(addr))) continue;
+        NSString *ip = [NSString stringWithUTF8String:addr];
+        if (!ip.length) continue;
+
+        if (strcmp(ifa->ifa_name, "en0") == 0) {
+            wifiIP = ip;
+            break;
+        }
+        if (!fallbackIP) fallbackIP = ip;
+    }
+
+    freeifaddrs(head);
+    NSString *ip = wifiIP ?: fallbackIP;
+    return ip.length ? [NSString stringWithFormat:@"IP %@", ip] : @"IP --";
+}
+
+static NSString *nbl_free_disk_text(void)
+{
+    NSURL *homeURL = [NSURL fileURLWithPath:NSHomeDirectory() isDirectory:YES];
+    NSNumber *available = nil;
+    if ([homeURL getResourceValue:&available
+                            forKey:NSURLVolumeAvailableCapacityForImportantUsageKey
+                             error:nil] && available) {
+        return [NSString stringWithFormat:@"Disk %@", nbl_format_disk_bytes(available.unsignedLongLongValue)];
+    }
+    if ([homeURL getResourceValue:&available
+                            forKey:NSURLVolumeAvailableCapacityKey
+                             error:nil] && available) {
+        return [NSString stringWithFormat:@"Disk %@", nbl_format_disk_bytes(available.unsignedLongLongValue)];
+    }
+
+    NSError *error = nil;
+    NSDictionary<NSFileAttributeKey, id> *attrs =
+        [[NSFileManager defaultManager] attributesOfFileSystemForPath:NSHomeDirectory()
+                                                                error:&error];
+    NSNumber *freeBytes = attrs[NSFileSystemFreeSize];
+    if (!freeBytes || error) return @"Disk --";
+    return [NSString stringWithFormat:@"Disk %@", nbl_format_disk_bytes(freeBytes.unsignedLongLongValue)];
+}
+
+static NSString *nbl_thermal_state_text(const char *language)
+{
+    BOOL chinese = language && strcmp(language, "zh") == 0;
+    NSProcessInfoThermalState state = NSProcessInfo.processInfo.thermalState;
+    switch (state) {
+        case NSProcessInfoThermalStateNominal:
+            return chinese ? @"❄️ 凉爽" : @"❄️ Cool";
+        case NSProcessInfoThermalStateFair:
+            return chinese ? @"🌡️ 温热" : @"🌡️ Warm";
+        case NSProcessInfoThermalStateSerious:
+            return chinese ? @"🔥 偏热" : @"🔥 Hot";
+        case NSProcessInfoThermalStateCritical:
+            return chinese ? @"🚨 过热" : @"🚨 Critical";
+        default:
+            return chinese ? @"🌡️ --" : @"🌡️ --";
+    }
+}
+
 static NSString *nbl_lunar_date_text(void);
 static NSString *nbl_lunar_date_text_cn(bool full);
 
@@ -312,7 +527,7 @@ static NSString *nbl_lunar_date_text_cn(bool full)
                 : [NSString stringWithFormat:@"%@%@", month, day];
 }
 
-static NSString *nbl_system_text(int item, bool celsius)
+static NSString *nbl_system_text(int item, bool celsius, const char *language)
 {
     switch (item) {
         case NiceBarLiteSystemBatteryTemp: {
@@ -348,6 +563,14 @@ static NSString *nbl_system_text(int item, bool celsius)
             return nbl_date_with_format(@"M/d");
         case NiceBarLiteSystemLunarDate:
             return nbl_lunar_date_text();
+        case NiceBarLiteSystemTodayTraffic:
+            return nbl_today_traffic_text();
+        case NiceBarLiteSystemCurrentIP:
+            return nbl_current_ip_text();
+        case NiceBarLiteSystemFreeDisk:
+            return nbl_free_disk_text();
+        case NiceBarLiteSystemThermalState:
+            return nbl_thermal_state_text(language);
         default:
             return @"--";
     }
@@ -359,7 +582,7 @@ static NSString *nbl_text_for_slot(NiceBarLiteSlotConfig slot, bool celsius)
         case NiceBarLiteContentCustomText:
             return slot.customText && slot.customText[0] ? @(slot.customText) : @"Text";
         case NiceBarLiteContentSystem:
-            return nbl_system_text(slot.systemItem, celsius);
+            return nbl_system_text(slot.systemItem, celsius, slot.systemLanguage);
         case NiceBarLiteContentTimeFormat:
             return nbl_date_with_format(slot.timeFormat && slot.timeFormat[0] ? @(slot.timeFormat) : @"HH:mm");
         case NiceBarLiteContentWeather:
@@ -885,7 +1108,6 @@ bool nicebarlite_apply_in_session(NiceBarLiteConfig config)
         return true;
     }
 
-    if (!updateAll && !r_is_objc_ptr(gNBLWindow)) return false;
     if (!nbl_create_or_fetch_window()) {
         printf("[NICEBARLITE] failed to create overlay window\n");
         return false;

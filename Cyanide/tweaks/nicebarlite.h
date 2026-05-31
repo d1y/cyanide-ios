@@ -33,7 +33,12 @@ typedef enum {
     NiceBarLiteSystemNetworkSpeed = 3,
     NiceBarLiteSystemUptime = 4,
     NiceBarLiteSystemDate = 5,
-    NiceBarLiteSystemLunarDate = 6
+    NiceBarLiteSystemLunarDate = 6,
+    NiceBarLiteSystemTodayTraffic = 7,
+    NiceBarLiteSystemCurrentIP = 8,
+    NiceBarLiteSystemFreeDisk = 9,
+    NiceBarLiteSystemThermalState = 10,
+    NiceBarLiteSystemLast = NiceBarLiteSystemThermalState
 } NiceBarLiteSystemItem;
 
 typedef struct {
@@ -42,6 +47,7 @@ typedef struct {
     const char *customText;
     const char *timeFormat;
     const char *weatherText;
+    const char *systemLanguage;
 } NiceBarLiteSlotConfig;
 
 typedef struct {

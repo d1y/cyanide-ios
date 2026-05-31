@@ -186,6 +186,7 @@ static NSString * const kSettingsNiceBarLiteSlotTextPrefix = @"NiceBarLiteSlotTe
 static NSString * const kSettingsNiceBarLiteSlotTimePrefix = @"NiceBarLiteSlotTime";
 static NSString * const kSettingsNiceBarLiteSlotWeatherPrefix = @"NiceBarLiteSlotWeather";
 static NSString * const kSettingsNiceBarLiteSlotWeatherLanguagePrefix = @"NiceBarLiteSlotWeatherLanguage";
+static NSString * const kSettingsNiceBarLiteSlotSystemLanguagePrefix = @"NiceBarLiteSlotSystemLanguage";
 static NSString * const kSettingsNiceBarLiteWeatherCache = @"NiceBarLiteWeatherCache";
 static NSString * const kSettingsNiceBarLiteWeatherTemp = @"NiceBarLiteWeatherTemp";
 static NSString * const kSettingsNiceBarLiteWeatherCode = @"NiceBarLiteWeatherCode";
@@ -1630,13 +1631,33 @@ static NSString *settings_nicebar_system_name(NSInteger item)
         case NiceBarLiteSystemUptime: return @"Uptime";
         case NiceBarLiteSystemDate: return @"Date";
         case NiceBarLiteSystemLunarDate: return @"Lunar date";
+        case NiceBarLiteSystemTodayTraffic: return @"Today traffic";
+        case NiceBarLiteSystemCurrentIP: return @"Current IP";
+        case NiceBarLiteSystemFreeDisk: return @"Free disk";
+        case NiceBarLiteSystemThermalState: return @"Thermal state";
         default: return @"Battery temp";
     }
 }
 
-static BOOL settings_nicebar_system_item_is_visible(NSInteger item)
+static NSString *settings_nicebar_system_description(NSInteger item)
 {
-    return item != NiceBarLiteSystemDate && item != NiceBarLiteSystemLunarDate;
+    switch (item) {
+        case NiceBarLiteSystemBatteryTemp: return @"Battery sensor temperature. Falls back through SpringBoard when local IOKit is unavailable.";
+        case NiceBarLiteSystemFreeRAM: return @"Currently free memory, refreshed by the NiceBar live loop.";
+        case NiceBarLiteSystemBatteryPercent: return @"Current battery percentage from UIDevice.";
+        case NiceBarLiteSystemNetworkSpeed: return @"Live download and upload speed.";
+        case NiceBarLiteSystemUptime: return @"Time since the device last booted.";
+        case NiceBarLiteSystemTodayTraffic: return @"Traffic counted since NiceBar started tracking today.";
+        case NiceBarLiteSystemCurrentIP: return @"Current Wi-Fi IPv4 address, falling back to another active interface.";
+        case NiceBarLiteSystemFreeDisk: return @"Available storage reported for important system usage.";
+        case NiceBarLiteSystemThermalState: return @"Device heat level shown with emoji; can display English or Chinese.";
+        default: return @"System status item.";
+    }
+}
+
+static NSString *settings_nicebar_system_language_name(NSString *language)
+{
+    return [language isEqualToString:@"zh"] ? @"中文" : @"English";
 }
 
 static NSString *settings_nicebar_time_format_name(NSString *format)
@@ -1952,9 +1973,11 @@ static NiceBarLiteConfig settings_nicebar_config_from_defaults(NSUserDefaults *d
         NSString *text = [d stringForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotTextPrefix, i)] ?: @"";
         NSString *time = [d stringForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotTimePrefix, i)] ?: @"HH:mm";
         NSString *weather = settings_nicebar_weather_text_for_slot(d, i);
+        NSString *systemLanguage = [d stringForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemLanguagePrefix, i)] ?: @"en";
         cfg.slots[i].customText = text.UTF8String;
         cfg.slots[i].timeFormat = time.UTF8String;
         cfg.slots[i].weatherText = weather.UTF8String;
+        cfg.slots[i].systemLanguage = systemLanguage.UTF8String;
     }
     return cfg;
 }
@@ -1976,7 +1999,9 @@ static void settings_log_nicebar_config(NSUserDefaults *d, const char *prefix)
         if (kind == NiceBarLiteContentSystem) {
             NSInteger item = [d integerForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemPrefix, i)];
             detail = settings_nicebar_system_name(item);
-            if (item == NiceBarLiteSystemNetworkSpeed) netSlots++;
+            if (item == NiceBarLiteSystemNetworkSpeed ||
+                item == NiceBarLiteSystemTodayTraffic ||
+                item == NiceBarLiteSystemCurrentIP) netSlots++;
         } else if (kind == NiceBarLiteContentTimeFormat) {
             NSString *format = [d stringForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotTimePrefix, i)] ?: @"HH:mm";
             detail = settings_nicebar_time_format_name(format);
@@ -2035,7 +2060,9 @@ static uint32_t settings_nicebar_network_mask(NSUserDefaults *d)
         NSInteger kind = [d integerForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotKindPrefix, i)];
         if (kind != NiceBarLiteContentSystem) continue;
         NSInteger item = [d integerForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemPrefix, i)];
-        if (item == NiceBarLiteSystemNetworkSpeed) mask |= (1u << i);
+        if (item == NiceBarLiteSystemNetworkSpeed ||
+            item == NiceBarLiteSystemTodayTraffic ||
+            item == NiceBarLiteSystemCurrentIP) mask |= (1u << i);
     }
     return mask;
 }
@@ -2048,6 +2075,7 @@ static uint32_t settings_nicebar_update_mask_for_key(NSString *key)
             [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemPrefix, i)] ||
             [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotTextPrefix, i)] ||
             [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotTimePrefix, i)] ||
+            [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemLanguagePrefix, i)] ||
             [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotWeatherLanguagePrefix, i)] ||
             [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotWeatherPrefix, i)]) {
             return (1u << i);
@@ -4075,6 +4103,7 @@ static BOOL settings_key_is_nicebarlite(NSString *key)
             [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemPrefix, i)] ||
             [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotTextPrefix, i)] ||
             [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotTimePrefix, i)] ||
+            [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemLanguagePrefix, i)] ||
             [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotWeatherLanguagePrefix, i)] ||
             [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotWeatherPrefix, i)]) {
             return YES;
@@ -4528,6 +4557,11 @@ void settings_register_defaults(void)
         settings_nicebar_key(kSettingsNiceBarLiteSlotWeatherLanguagePrefix, NiceBarLiteSlotBottomLeft): @"en",
         settings_nicebar_key(kSettingsNiceBarLiteSlotWeatherLanguagePrefix, NiceBarLiteSlotBottomCenter): @"en",
         settings_nicebar_key(kSettingsNiceBarLiteSlotWeatherLanguagePrefix, NiceBarLiteSlotBottomRight): @"en",
+        settings_nicebar_key(kSettingsNiceBarLiteSlotSystemLanguagePrefix, NiceBarLiteSlotTopLeft): @"en",
+        settings_nicebar_key(kSettingsNiceBarLiteSlotSystemLanguagePrefix, NiceBarLiteSlotTopRight): @"en",
+        settings_nicebar_key(kSettingsNiceBarLiteSlotSystemLanguagePrefix, NiceBarLiteSlotBottomLeft): @"en",
+        settings_nicebar_key(kSettingsNiceBarLiteSlotSystemLanguagePrefix, NiceBarLiteSlotBottomCenter): @"en",
+        settings_nicebar_key(kSettingsNiceBarLiteSlotSystemLanguagePrefix, NiceBarLiteSlotBottomRight): @"en",
         kSettingsNiceBarLiteWeatherCache: @"Weather --",
 
         kSettingsRSSIDisplayEnabled: @NO,
@@ -5876,6 +5910,121 @@ static _CyanideMailDelegate *_cyanide_mail_delegate(void) {
 
 @end
 
+@interface _NiceBarSystemItemPickerViewController : UITableViewController
+@property (nonatomic, copy) NSString *slotTitle;
+@property (nonatomic, assign) NSInteger selectedItem;
+@property (nonatomic, copy) NSString *selectedLanguage;
+@property (nonatomic, copy) void (^onSelect)(NSInteger item, NSString *language);
+@property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *sections;
+- (instancetype)initWithSlotTitle:(NSString *)slotTitle
+                     selectedItem:(NSInteger)selectedItem
+                 selectedLanguage:(NSString *)selectedLanguage
+                          onSelect:(void (^)(NSInteger item, NSString *language))onSelect;
+@end
+
+@implementation _NiceBarSystemItemPickerViewController
+
+- (instancetype)initWithSlotTitle:(NSString *)slotTitle
+                     selectedItem:(NSInteger)selectedItem
+                 selectedLanguage:(NSString *)selectedLanguage
+                          onSelect:(void (^)(NSInteger item, NSString *language))onSelect
+{
+    if ((self = [super initWithStyle:UITableViewStyleInsetGrouped])) {
+        _slotTitle = [slotTitle copy];
+        _selectedItem = selectedItem;
+        _selectedLanguage = [selectedLanguage isEqualToString:@"zh"] ? @"zh" : @"en";
+        _onSelect = [onSelect copy];
+        _sections = @[
+            @{ @"title": @"Device", @"rows": @[
+                @{ @"item": @(NiceBarLiteSystemBatteryTemp) },
+                @{ @"item": @(NiceBarLiteSystemBatteryPercent) },
+                @{ @"item": @(NiceBarLiteSystemFreeRAM) },
+                @{ @"item": @(NiceBarLiteSystemUptime) },
+                @{ @"item": @(NiceBarLiteSystemThermalState), @"language": @"en", @"title": @"Thermal state · English" },
+                @{ @"item": @(NiceBarLiteSystemThermalState), @"language": @"zh", @"title": @"Thermal state · 中文" },
+            ] },
+            @{ @"title": @"Network", @"rows": @[
+                @{ @"item": @(NiceBarLiteSystemNetworkSpeed) },
+                @{ @"item": @(NiceBarLiteSystemTodayTraffic) },
+                @{ @"item": @(NiceBarLiteSystemCurrentIP) },
+            ] },
+            @{ @"title": @"Storage", @"rows": @[
+                @{ @"item": @(NiceBarLiteSystemFreeDisk) },
+            ] },
+        ];
+    }
+    return self;
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.title = self.slotTitle.length ? self.slotTitle : @"System Item";
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 64.0;
+    self.navigationItem.rightBarButtonItem =
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemClose
+                                                      target:self
+                                                      action:@selector(closePicker)];
+}
+
+- (void)closePicker
+{
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView
+{
+    (void)tableView;
+    return self.sections.count;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+{
+    NSArray *rows = self.sections[(NSUInteger)section][@"rows"];
+    return rows.count;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+{
+    (void)tableView;
+    return self.sections[(NSUInteger)section][@"title"];
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"nicebar-system-item"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"nicebar-system-item"];
+        cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
+        cell.detailTextLabel.numberOfLines = 0;
+    }
+    NSDictionary *row = self.sections[(NSUInteger)indexPath.section][@"rows"][(NSUInteger)indexPath.row];
+    NSInteger item = [row[@"item"] integerValue];
+    NSString *language = row[@"language"] ?: @"en";
+    NSString *title = row[@"title"] ?: settings_nicebar_system_name(item);
+    cell.textLabel.text = title;
+    cell.detailTextLabel.text = settings_nicebar_system_description(item);
+
+    BOOL sameItem = self.selectedItem == item;
+    BOOL sameLanguage = item != NiceBarLiteSystemThermalState ||
+                        [self.selectedLanguage isEqualToString:language];
+    cell.accessoryType = (sameItem && sameLanguage) ? UITableViewCellAccessoryCheckmark : UITableViewCellAccessoryNone;
+    return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    NSDictionary *row = self.sections[(NSUInteger)indexPath.section][@"rows"][(NSUInteger)indexPath.row];
+    NSInteger item = [row[@"item"] integerValue];
+    NSString *language = row[@"language"] ?: @"en";
+    if (self.onSelect) self.onSelect(item, language);
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+@end
+
 @implementation _CyanideNiceBarWeatherRefresher
 
 - (instancetype)init
@@ -6527,6 +6676,12 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         }
         case NiceBarLiteContentSystem: {
             NSInteger item = [d integerForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemPrefix, slot)];
+            if (item == NiceBarLiteSystemThermalState) {
+                NSString *language = [d stringForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemLanguagePrefix, slot)] ?: @"en";
+                return [NSString stringWithFormat:@"%@ · %@",
+                        settings_nicebar_system_name(item),
+                        settings_nicebar_system_language_name(language)];
+            }
             return settings_nicebar_system_name(item);
         }
         case NiceBarLiteContentTimeFormat: {
@@ -9626,27 +9781,26 @@ void cyanide_present_contact(UIViewController *host)
 - (void)presentNiceBarSystemPickerForSlot:(NSInteger)slot
 {
     if (slot < 0 || slot >= NiceBarLiteSlotCount) return;
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:[NSString stringWithFormat:@"%@ System Item", settings_nicebar_slot_name(slot)]
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    for (NSInteger item = NiceBarLiteSystemBatteryTemp; item <= NiceBarLiteSystemLunarDate; item++) {
-        if (!settings_nicebar_system_item_is_visible(item)) continue;
-        [sheet addAction:[UIAlertAction actionWithTitle:settings_nicebar_system_name(item)
-                                                  style:UIAlertActionStyleDefault
-                                                handler:^(UIAlertAction *_) {
+    NSInteger selectedItem = [d integerForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemPrefix, slot)];
+    NSString *selectedLanguage = [d stringForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemLanguagePrefix, slot)] ?: @"en";
+    __weak typeof(self) weakSelf = self;
+    _NiceBarSystemItemPickerViewController *picker =
+        [[_NiceBarSystemItemPickerViewController alloc] initWithSlotTitle:[NSString stringWithFormat:@"%@ System Item", settings_nicebar_slot_name(slot)]
+                                                             selectedItem:selectedItem
+                                                         selectedLanguage:selectedLanguage
+                                                                  onSelect:^(NSInteger item, NSString *language) {
             [d setInteger:NiceBarLiteContentSystem forKey:settings_nicebar_key(kSettingsNiceBarLiteSlotKindPrefix, slot)];
             [d setInteger:item forKey:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemPrefix, slot)];
+            [d setObject:[language isEqualToString:@"zh"] ? @"zh" : @"en"
+                forKey:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemLanguagePrefix, slot)];
             [d synchronize];
             settings_schedule_live_apply_for_key(settings_nicebar_key(kSettingsNiceBarLiteSlotSystemPrefix, slot));
-            [self.tableView reloadData];
-        }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-    UIView *anchor = self.tableView;
-    sheet.popoverPresentationController.sourceView = anchor;
-    sheet.popoverPresentationController.sourceRect = anchor.bounds;
-    [self presentViewController:sheet animated:YES completion:nil];
+            [weakSelf.tableView reloadData];
+        }];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:picker];
+    nav.modalPresentationStyle = UIModalPresentationFormSheet;
+    [self presentViewController:nav animated:YES completion:nil];
 }
 
 - (void)nicebarSlotButtonTapped:(UIButton *)sender
