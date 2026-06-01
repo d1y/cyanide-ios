@@ -4,6 +4,7 @@
 //
 
 #import "nicebarlite.h"
+#import "nicebarlite_traffic_counter.h"
 #import "remote_objc.h"
 #import "../TaskRop/RemoteCall.h"
 #import "../LogTextView.h"
@@ -109,6 +110,7 @@ static uint64_t gNBLReadTick = 0;
 static double gNBLTickDownKB = 0.0;
 static double gNBLTickUpKB = 0.0;
 static double gNBLTickNowSeconds = 0.0;
+static NBLTrafficCounterState gNBLTodayTrafficState = {0};
 
 static void *g_iokit = NULL;
 static CFMutableDictionaryRef (*pIOServiceMatching)(const char *) = NULL;
@@ -442,29 +444,24 @@ static NSString *nbl_format_disk_bytes(uint64_t bytes)
     return [NSString stringWithFormat:@"%.0fG", value];
 }
 
-static NSTimeInterval nbl_today_start_time(void)
-{
-    NSDate *start = nil;
-    if ([[NSCalendar currentCalendar] rangeOfUnit:NSCalendarUnitDay
-                                        startDate:&start
-                                         interval:NULL
-                                          forDate:[NSDate date]] && start) {
-        return start.timeIntervalSince1970;
-    }
-    return 0.0;
-}
-
 static NSString *nbl_today_traffic_text(void)
 {
     uint64_t startUs = nbl_now_us();
-    static BOOL haveBaseline = NO;
-    static NSTimeInterval baselineDayStart = 0.0;
-    static uint64_t baselineIn = 0;
-    static uint64_t baselineOut = 0;
 
     uint64_t totalIn = 0;
     uint64_t totalOut = 0;
     if (!nbl_read_net_totals(&totalIn, &totalOut)) {
+        uint64_t cached = 0;
+        if (nbl_traffic_counter_value(&gNBLTodayTrafficState, &cached)) {
+            unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
+            if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
+                NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] source=getifaddrs-failed cached=%llu total=%llums\n",
+                              (unsigned long long)cached,
+                              totalMs);
+            }
+            return [NSString stringWithFormat:@"T %@", nbl_format_bytes(cached)];
+        }
+
         unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
         if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
             NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] source=getifaddrs-failed total=%llums\n", totalMs);
@@ -472,29 +469,20 @@ static NSString *nbl_today_traffic_text(void)
         return @"T --";
     }
 
-    NSTimeInterval dayStart = nbl_today_start_time();
-    BOOL resetBaseline = NO;
-    if (!haveBaseline ||
-        dayStart <= 0.0 ||
-        fabs(dayStart - baselineDayStart) > 1.0 ||
-        totalIn < baselineIn ||
-        totalOut < baselineOut) {
-        resetBaseline = YES;
-        haveBaseline = YES;
-        baselineDayStart = dayStart;
-        baselineIn = totalIn;
-        baselineOut = totalOut;
-    }
-
-    uint64_t down = totalIn >= baselineIn ? totalIn - baselineIn : 0;
-    uint64_t up = totalOut >= baselineOut ? totalOut - baselineOut : 0;
-    NSString *text = [NSString stringWithFormat:@"T %@", nbl_format_bytes(down + up)];
+    uint64_t trafficBytes = 0;
+    NBLTrafficCounterEvent event = nbl_traffic_counter_sample(&gNBLTodayTrafficState,
+                                                              totalIn,
+                                                              totalOut,
+                                                              &trafficBytes);
+    NSString *text = [NSString stringWithFormat:@"T %@", nbl_format_bytes(trafficBytes)];
     unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
     if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
-        NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] reset=%d bytes=%llu total=%llums\n",
-                 resetBaseline ? 1 : 0,
-                 (unsigned long long)(down + up),
-                 totalMs);
+        NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] event=%d bytes=%llu in=%llu out=%llu total=%llums\n",
+                      (int)event,
+                      (unsigned long long)trafficBytes,
+                      (unsigned long long)totalIn,
+                      (unsigned long long)totalOut,
+                      totalMs);
     }
     return text;
 }
