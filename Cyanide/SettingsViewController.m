@@ -2640,6 +2640,24 @@ static uint32_t settings_nicebar_seconds_mask(NSUserDefaults *d)
     return mask;
 }
 
+static uint32_t settings_nicebar_clock_mask(NSUserDefaults *d)
+{
+    uint32_t mask = 0;
+    for (NSInteger i = 0; i < NiceBarLiteSlotCount; i++) {
+        NSInteger kind = [d integerForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotKindPrefix, i)];
+        if (kind == NiceBarLiteContentTimeFormat) {
+            mask |= (1u << i);
+            continue;
+        }
+        if (kind != NiceBarLiteContentSystem) continue;
+        NSInteger item = [d integerForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemPrefix, i)];
+        if (item == NiceBarLiteSystemDate || item == NiceBarLiteSystemLunarDate) {
+            mask |= (1u << i);
+        }
+    }
+    return mask;
+}
+
 static uint32_t settings_nicebar_network_mask(NSUserDefaults *d)
 {
     uint32_t mask = 0;
@@ -3495,6 +3513,7 @@ static void settings_start_nicebarlite_live_loop(void)
         NSUInteger failures = 0;
         uint64_t nextTickUS = settings_now_us();
         time_t lastSecondTick = 0;
+        time_t lastMinuteTick = 0;
         uint64_t lastNetworkTickUS = 0;
         BOOL pausedForSleep = NO;
 
@@ -3538,15 +3557,23 @@ static void settings_start_nicebarlite_live_loop(void)
                 settings_nicebar_refresh_weather_if_needed(NO, nil);
                 uint64_t nowForMaskUS = tickStartUS;
                 time_t nowSecond = time(NULL);
+                time_t nowMinute = nowSecond / 60;
                 uint32_t secondsMask = settings_nicebar_seconds_mask(d);
+                uint32_t clockMask = settings_nicebar_clock_mask(d);
                 uint32_t networkMask = settings_nicebar_network_mask(d);
                 uint32_t updateMask = 0;
                 const char *updateReason = "none";
+                BOOL clockDue = (clockMask != 0 && nowMinute != lastMinuteTick);
 
                 if (secondsMask != 0 && nowSecond != lastSecondTick) {
-                    updateMask = secondsMask;
-                    updateReason = "seconds";
+                    updateMask = secondsMask | (clockDue ? clockMask : 0);
+                    updateReason = clockDue ? "seconds+clock" : "seconds";
                     lastSecondTick = nowSecond;
+                    if (clockDue) lastMinuteTick = nowMinute;
+                } else if (clockDue) {
+                    updateMask = clockMask;
+                    updateReason = "clock";
+                    lastMinuteTick = nowMinute;
                 } else if (networkMask != 0 &&
                            (lastNetworkTickUS == 0 ||
                             (nowForMaskUS >= lastNetworkTickUS &&
