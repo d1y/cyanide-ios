@@ -9,6 +9,8 @@
 #import "SettingsViewController.h"
 #import "UpdateChecker.h"
 
+static const BOOL kOldAutoUpdate = NO;
+
 @interface SceneDelegate ()
 @property (nonatomic, assign) BOOL didSelectInitialTab;
 
@@ -54,6 +56,7 @@
 
 
 - (void)runUpdateCheck {
+    if (!kOldAutoUpdate) return;
     UITabBarController *tab = (UITabBarController *)self.window.rootViewController;
     if (![tab isKindOfClass:UITabBarController.class]) return;
     // UpdateChecker walks `presentedViewController` to find the topmost VC and
