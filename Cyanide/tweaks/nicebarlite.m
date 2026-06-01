@@ -67,6 +67,7 @@ static const bool kNBLDebugLogging = false;
 
 static const unsigned long long kNBLSlowLogMs = 100;
 static const uint64_t kNBLFullTraceTicks = 3;
+static const uint64_t kNBLTrafficPersistIntervalUS = 5000000ULL;
 
 #define NBL_DEBUG_LOG(fmt, ...) do { \
     if (kNBLDebugLogging) log_user(fmt, ##__VA_ARGS__); \
@@ -111,6 +112,10 @@ static double gNBLTickDownKB = 0.0;
 static double gNBLTickUpKB = 0.0;
 static double gNBLTickNowSeconds = 0.0;
 static NBLTrafficCounterState gNBLTodayTrafficState = {0};
+static BOOL gNBLTrafficPersistenceLoaded = NO;
+static NSString *gNBLTrafficDateKey = nil;
+static uint64_t gNBLTrafficLastPersistedBytes = 0;
+static uint64_t gNBLTrafficLastPersistUS = 0;
 
 static void *g_iokit = NULL;
 static CFMutableDictionaryRef (*pIOServiceMatching)(const char *) = NULL;
@@ -418,7 +423,7 @@ static NSString *nbl_format_speed(double kbValue)
     return [NSString stringWithFormat:@"%.0fM", mbValue];
 }
 
-static NSString *nbl_format_bytes(uint64_t bytes)
+NSString *nicebarlite_format_traffic_bytes(uint64_t bytes)
 {
     double value = (double)bytes;
     if (value < 1024.0) return [NSString stringWithFormat:@"%lluB", (unsigned long long)bytes];
@@ -427,8 +432,7 @@ static NSString *nbl_format_bytes(uint64_t bytes)
     value /= 1024.0;
     if (value < 1024.0) return [NSString stringWithFormat:@"%.1fM", value];
     value /= 1024.0;
-    if (value < 10.0) return [NSString stringWithFormat:@"%.1fG", value];
-    return [NSString stringWithFormat:@"%.0fG", value];
+    return [NSString stringWithFormat:@"%.2fG", value];
 }
 
 static NSString *nbl_format_disk_bytes(uint64_t bytes)
@@ -444,9 +448,149 @@ static NSString *nbl_format_disk_bytes(uint64_t bytes)
     return [NSString stringWithFormat:@"%.0fG", value];
 }
 
+static NSString *nbl_traffic_date_key_for_date(NSDate *date)
+{
+    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+    formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    formatter.timeZone = NSTimeZone.localTimeZone;
+    formatter.dateFormat = @"yyyyMMdd";
+    return [formatter stringFromDate:date ?: NSDate.date];
+}
+
+NSString *nicebarlite_traffic_store_path(void)
+{
+    NSArray<NSString *> *dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,
+                                                                    NSUserDomainMask,
+                                                                    YES);
+    NSString *base = dirs.firstObject ?: NSTemporaryDirectory();
+    return [[base stringByAppendingPathComponent:@"data"]
+            stringByAppendingPathComponent:@"NiceBarLiteTraffic.json"];
+}
+
+static NSMutableDictionary<NSString *, NSString *> *nbl_read_traffic_history_mutable(void)
+{
+    NSString *path = nicebarlite_traffic_store_path();
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (data.length == 0) return [NSMutableDictionary dictionary];
+
+    NSError *error = nil;
+    id obj = [NSJSONSerialization JSONObjectWithData:data options:0 error:&error];
+    if (![obj isKindOfClass:NSDictionary.class]) {
+        if (error) {
+            NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] history read failed: %s\n",
+                          error.localizedDescription.UTF8String ?: "unknown");
+        }
+        return [NSMutableDictionary dictionary];
+    }
+
+    NSMutableDictionary<NSString *, NSString *> *out = [NSMutableDictionary dictionary];
+    [(NSDictionary *)obj enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+        (void)stop;
+        if (![key isKindOfClass:NSString.class]) return;
+        if ([value isKindOfClass:NSString.class]) {
+            out[key] = value;
+        } else if ([value respondsToSelector:@selector(unsignedLongLongValue)]) {
+            out[key] = [NSString stringWithFormat:@"%llu", [value unsignedLongLongValue]];
+        }
+    }];
+    return out;
+}
+
+NSDictionary<NSString *, NSString *> *nicebarlite_traffic_history_snapshot(void)
+{
+    return [nbl_read_traffic_history_mutable() copy];
+}
+
+static uint64_t nbl_traffic_bytes_from_value(id value)
+{
+    if ([value isKindOfClass:NSString.class]) return (uint64_t)[(NSString *)value longLongValue];
+    if ([value respondsToSelector:@selector(unsignedLongLongValue)]) return (uint64_t)[value unsignedLongLongValue];
+    return 0;
+}
+
+static BOOL nbl_write_traffic_history(NSDictionary<NSString *, NSString *> *history)
+{
+    NSString *path = nicebarlite_traffic_store_path();
+    NSString *dir = path.stringByDeletingLastPathComponent;
+    NSError *error = nil;
+    if (![[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                   withIntermediateDirectories:YES
+                                                    attributes:nil
+                                                         error:&error]) {
+        NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] history mkdir failed: %s\n",
+                      error.localizedDescription.UTF8String ?: "unknown");
+        return NO;
+    }
+
+    NSData *data = [NSJSONSerialization dataWithJSONObject:history
+                                                   options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys
+                                                     error:&error];
+    if (!data) {
+        NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] history encode failed: %s\n",
+                      error.localizedDescription.UTF8String ?: "unknown");
+        return NO;
+    }
+    BOOL ok = [data writeToFile:path options:NSDataWritingAtomic error:&error];
+    if (!ok) {
+        NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] history write failed: %s\n",
+                      error.localizedDescription.UTF8String ?: "unknown");
+    }
+    return ok;
+}
+
+static void nbl_persist_traffic_bytes(NSString *dateKey, uint64_t bytes, BOOL force)
+{
+    if (dateKey.length == 0) return;
+    uint64_t nowUS = nbl_now_us();
+    if (!force && bytes == gNBLTrafficLastPersistedBytes) return;
+    if (!force &&
+        nowUS >= gNBLTrafficLastPersistUS &&
+        nowUS - gNBLTrafficLastPersistUS < kNBLTrafficPersistIntervalUS) {
+        return;
+    }
+
+    NSMutableDictionary<NSString *, NSString *> *history = nbl_read_traffic_history_mutable();
+    history[dateKey] = [NSString stringWithFormat:@"%llu", (unsigned long long)bytes];
+    if (nbl_write_traffic_history(history)) {
+        gNBLTrafficLastPersistedBytes = bytes;
+        gNBLTrafficLastPersistUS = nowUS;
+        NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] persisted date=%s bytes=%llu force=%d\n",
+                      dateKey.UTF8String ?: "",
+                      (unsigned long long)bytes,
+                      force ? 1 : 0);
+    }
+}
+
+static void nbl_ensure_today_traffic_persistence_loaded(void)
+{
+    NSString *todayKey = nbl_traffic_date_key_for_date(NSDate.date);
+    if (gNBLTrafficPersistenceLoaded && [gNBLTrafficDateKey isEqualToString:todayKey]) return;
+
+    if (gNBLTrafficPersistenceLoaded && gNBLTrafficDateKey.length > 0) {
+        uint64_t current = 0;
+        if (nbl_traffic_counter_value(&gNBLTodayTrafficState, &current)) {
+            nbl_persist_traffic_bytes(gNBLTrafficDateKey, current, YES);
+        }
+    }
+
+    NSDictionary<NSString *, NSString *> *history = nicebarlite_traffic_history_snapshot();
+    uint64_t saved = nbl_traffic_bytes_from_value(history[todayKey]);
+    nbl_traffic_counter_reset(&gNBLTodayTrafficState);
+    nbl_traffic_counter_seed_accumulated(&gNBLTodayTrafficState, saved);
+    gNBLTrafficPersistenceLoaded = YES;
+    gNBLTrafficDateKey = [todayKey copy];
+    gNBLTrafficLastPersistedBytes = saved;
+    gNBLTrafficLastPersistUS = 0;
+    NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] loaded date=%s saved=%llu path=%s\n",
+                  todayKey.UTF8String ?: "",
+                  (unsigned long long)saved,
+                  nicebarlite_traffic_store_path().UTF8String ?: "");
+}
+
 static NSString *nbl_today_traffic_text(void)
 {
     uint64_t startUs = nbl_now_us();
+    nbl_ensure_today_traffic_persistence_loaded();
 
     uint64_t totalIn = 0;
     uint64_t totalOut = 0;
@@ -459,7 +603,7 @@ static NSString *nbl_today_traffic_text(void)
                               (unsigned long long)cached,
                               totalMs);
             }
-            return [NSString stringWithFormat:@"T %@", nbl_format_bytes(cached)];
+            return [NSString stringWithFormat:@"T %@", nicebarlite_format_traffic_bytes(cached)];
         }
 
         unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
@@ -474,7 +618,8 @@ static NSString *nbl_today_traffic_text(void)
                                                               totalIn,
                                                               totalOut,
                                                               &trafficBytes);
-    NSString *text = [NSString stringWithFormat:@"T %@", nbl_format_bytes(trafficBytes)];
+    nbl_persist_traffic_bytes(gNBLTrafficDateKey, trafficBytes, NO);
+    NSString *text = [NSString stringWithFormat:@"T %@", nicebarlite_format_traffic_bytes(trafficBytes)];
     unsigned long long totalMs = nbl_elapsed_ms_since(startUs);
     if (nbl_should_trace_apply() || totalMs >= kNBLSlowLogMs) {
         NBL_DEBUG_LOG("[NICEBARLITE][TRAFFIC] event=%d bytes=%llu in=%llu out=%llu total=%llums\n",

@@ -20,6 +20,8 @@ typedef struct {
 } NBLTrafficCounterState;
 
 void nbl_traffic_counter_reset(NBLTrafficCounterState *state);
+void nbl_traffic_counter_seed_accumulated(NBLTrafficCounterState *state,
+                                          uint64_t accumulated);
 NBLTrafficCounterEvent nbl_traffic_counter_sample(NBLTrafficCounterState *state,
                                                   uint64_t totalIn,
                                                   uint64_t totalOut,

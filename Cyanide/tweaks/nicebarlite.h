@@ -8,6 +8,9 @@
 
 #import <stdbool.h>
 #import <stdint.h>
+#ifdef __OBJC__
+#import <Foundation/Foundation.h>
+#endif
 
 typedef enum {
     NiceBarLiteSlotTopLeft = 0,
@@ -59,5 +62,11 @@ typedef struct {
 bool nicebarlite_apply_in_session(NiceBarLiteConfig config);
 bool nicebarlite_stop_in_session(void);
 void nicebarlite_forget_remote_state(void);
+
+#ifdef __OBJC__
+NSString *nicebarlite_format_traffic_bytes(uint64_t bytes);
+NSString *nicebarlite_traffic_store_path(void);
+NSDictionary<NSString *, NSString *> *nicebarlite_traffic_history_snapshot(void);
+#endif
 
 #endif /* nicebarlite_h */

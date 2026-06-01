@@ -39,9 +39,11 @@
 #import <CoreLocation/CoreLocation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <notify.h>
+#import <math.h>
 #import <sys/utsname.h>
 #import <time.h>
 #import <unistd.h>
+#import <stdlib.h>
 
 typedef void (^CyanideNiceBarWeatherCompletion)(BOOL ok, NSString *text, NSNumber *temp, NSNumber *code, BOOL fetched);
 
@@ -52,6 +54,591 @@ typedef void (^CyanideNiceBarWeatherCompletion)(BOOL ok, NSString *text, NSNumbe
 @property (nonatomic, assign) BOOL weatherFetchInFlight;
 @property (nonatomic, assign) BOOL requestUsesCelsius;
 - (void)refreshWeatherForce:(BOOL)force completion:(CyanideNiceBarWeatherCompletion)completion;
+@end
+
+typedef NS_ENUM(NSInteger, NiceBarTrafficHistoryRange) {
+    NiceBarTrafficHistoryRangeWeek = 0,
+    NiceBarTrafficHistoryRangeMonth = 1,
+    NiceBarTrafficHistoryRangeYear = 2,
+};
+
+@interface NiceBarTrafficChartItem : NSObject
+@property (nonatomic, copy) NSString *label;
+@property (nonatomic, assign) uint64_t bytes;
+@end
+
+@implementation NiceBarTrafficChartItem
+@end
+
+@interface NiceBarTrafficChartView : UIView
+@property (nonatomic, copy) NSArray<NiceBarTrafficChartItem *> *items;
+@end
+
+@implementation NiceBarTrafficChartView
+
+- (instancetype)initWithFrame:(CGRect)frame
+{
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.backgroundColor = UIColor.clearColor;
+        self.contentMode = UIViewContentModeRedraw;
+    }
+    return self;
+}
+
+- (void)setItems:(NSArray<NiceBarTrafficChartItem *> *)items
+{
+    _items = [items copy];
+    [self setNeedsDisplay];
+}
+
+- (void)drawRect:(CGRect)rect
+{
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    if (!ctx) return;
+    CGRect bounds = UIEdgeInsetsInsetRect(self.bounds, UIEdgeInsetsMake(10.0, 8.0, 20.0, 8.0));
+    if (bounds.size.width <= 1.0 || bounds.size.height <= 1.0) return;
+
+    UIColor *axisColor = [UIColor.separatorColor colorWithAlphaComponent:0.55];
+    [axisColor setStroke];
+    UIBezierPath *baseline = [UIBezierPath bezierPath];
+    [baseline moveToPoint:CGPointMake(CGRectGetMinX(bounds), CGRectGetMaxY(bounds))];
+    [baseline addLineToPoint:CGPointMake(CGRectGetMaxX(bounds), CGRectGetMaxY(bounds))];
+    baseline.lineWidth = 1.0 / UIScreen.mainScreen.scale;
+    [baseline stroke];
+
+    NSUInteger count = self.items.count;
+    if (count == 0) {
+        NSDictionary *attrs = @{
+            NSFontAttributeName: [UIFont systemFontOfSize:12.0 weight:UIFontWeightRegular],
+            NSForegroundColorAttributeName: UIColor.secondaryLabelColor,
+        };
+        NSString *text = @"No data";
+        CGSize size = [text sizeWithAttributes:attrs];
+        [text drawAtPoint:CGPointMake(CGRectGetMidX(bounds) - size.width / 2.0,
+                                      CGRectGetMidY(bounds) - size.height / 2.0)
+           withAttributes:attrs];
+        return;
+    }
+
+    uint64_t maxBytes = 0;
+    for (NiceBarTrafficChartItem *item in self.items) {
+        if (item.bytes > maxBytes) maxBytes = item.bytes;
+    }
+    if (maxBytes == 0) maxBytes = 1;
+
+    CGFloat slot = bounds.size.width / (CGFloat)count;
+    CGFloat barWidth = MAX(3.0, MIN(18.0, slot * 0.56));
+    UIColor *barColor = UIColor.systemBlueColor;
+    UIColor *mutedBarColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.24];
+    UIColor *labelColor = UIColor.secondaryLabelColor;
+    NSDictionary *labelAttrs = @{
+        NSFontAttributeName: [UIFont systemFontOfSize:9.0 weight:UIFontWeightRegular],
+        NSForegroundColorAttributeName: labelColor,
+    };
+
+    for (NSUInteger i = 0; i < count; i++) {
+        NiceBarTrafficChartItem *item = self.items[i];
+        CGFloat fraction = (CGFloat)((double)item.bytes / (double)maxBytes);
+        CGFloat height = item.bytes == 0 ? 2.0 : MAX(4.0, bounds.size.height * fraction);
+        CGFloat x = CGRectGetMinX(bounds) + slot * (CGFloat)i + (slot - barWidth) / 2.0;
+        CGFloat y = CGRectGetMaxY(bounds) - height;
+        CGRect barRect = CGRectMake(x, y, barWidth, height);
+        UIBezierPath *bar = [UIBezierPath bezierPathWithRoundedRect:barRect
+                                                       cornerRadius:MIN(barWidth / 2.0, 4.0)];
+        [(item.bytes == 0 ? mutedBarColor : barColor) setFill];
+        [bar fill];
+
+        BOOL shouldDrawLabel = count <= 12 || i == 0 || i == count - 1 || ((i + 1) % 5 == 0);
+        if (shouldDrawLabel && item.label.length > 0) {
+            CGSize labelSize = [item.label sizeWithAttributes:labelAttrs];
+            CGFloat labelX = x + barWidth / 2.0 - labelSize.width / 2.0;
+            CGFloat labelY = CGRectGetMaxY(bounds) + 5.0;
+            [item.label drawAtPoint:CGPointMake(labelX, labelY) withAttributes:labelAttrs];
+        }
+    }
+}
+
+@end
+
+@interface NiceBarTrafficSummaryCell : UITableViewCell
+@property (nonatomic, strong) UISegmentedControl *rangeControl;
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *totalLabel;
+@property (nonatomic, strong) UILabel *averageLabel;
+@property (nonatomic, strong) UILabel *peakLabel;
+@property (nonatomic, strong) NiceBarTrafficChartView *chartView;
+@property (nonatomic, copy) void (^rangeChanged)(NSInteger selectedIndex);
+- (void)configureTitle:(NSString *)title
+                 total:(NSString *)total
+               average:(NSString *)average
+                  peak:(NSString *)peak
+                 range:(NiceBarTrafficHistoryRange)range
+                 items:(NSArray<NiceBarTrafficChartItem *> *)items;
+@end
+
+@implementation NiceBarTrafficSummaryCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier
+{
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+        self.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+        _rangeControl = [[UISegmentedControl alloc] initWithItems:@[@"Week", @"Month", @"Year"]];
+        [_rangeControl addTarget:self action:@selector(rangeControlChanged:) forControlEvents:UIControlEventValueChanged];
+
+        _titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _titleLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
+        _titleLabel.textColor = UIColor.secondaryLabelColor;
+
+        _totalLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _totalLabel.font = [UIFont systemFontOfSize:30.0 weight:UIFontWeightBold];
+        _totalLabel.adjustsFontSizeToFitWidth = YES;
+        _totalLabel.minimumScaleFactor = 0.65;
+        _totalLabel.textColor = UIColor.labelColor;
+
+        _averageLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _averageLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightMedium];
+        _averageLabel.textColor = UIColor.secondaryLabelColor;
+
+        _peakLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _peakLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightMedium];
+        _peakLabel.textColor = UIColor.secondaryLabelColor;
+
+        _chartView = [[NiceBarTrafficChartView alloc] initWithFrame:CGRectZero];
+
+        for (UIView *view in @[_rangeControl, _titleLabel, _totalLabel, _averageLabel, _peakLabel, _chartView]) {
+            view.translatesAutoresizingMaskIntoConstraints = NO;
+            [self.contentView addSubview:view];
+        }
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_rangeControl.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:14.0],
+            [_rangeControl.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16.0],
+            [_rangeControl.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16.0],
+
+            [_titleLabel.topAnchor constraintEqualToAnchor:_rangeControl.bottomAnchor constant:16.0],
+            [_titleLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16.0],
+            [_titleLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16.0],
+
+            [_totalLabel.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:4.0],
+            [_totalLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16.0],
+            [_totalLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16.0],
+
+            [_averageLabel.topAnchor constraintEqualToAnchor:_totalLabel.bottomAnchor constant:8.0],
+            [_averageLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16.0],
+            [_averageLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16.0],
+
+            [_peakLabel.topAnchor constraintEqualToAnchor:_averageLabel.bottomAnchor constant:3.0],
+            [_peakLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16.0],
+            [_peakLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16.0],
+
+            [_chartView.topAnchor constraintEqualToAnchor:_peakLabel.bottomAnchor constant:14.0],
+            [_chartView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:10.0],
+            [_chartView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-10.0],
+            [_chartView.heightAnchor constraintEqualToConstant:128.0],
+            [_chartView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-14.0],
+        ]];
+    }
+    return self;
+}
+
+- (void)rangeControlChanged:(UISegmentedControl *)sender
+{
+    if (self.rangeChanged) self.rangeChanged(sender.selectedSegmentIndex);
+}
+
+- (void)configureTitle:(NSString *)title
+                 total:(NSString *)total
+               average:(NSString *)average
+                  peak:(NSString *)peak
+                 range:(NiceBarTrafficHistoryRange)range
+                 items:(NSArray<NiceBarTrafficChartItem *> *)items
+{
+    self.rangeControl.selectedSegmentIndex = range;
+    self.titleLabel.text = title;
+    self.totalLabel.text = total;
+    self.averageLabel.text = average;
+    self.peakLabel.text = peak;
+    self.chartView.items = items;
+}
+
+@end
+
+@interface NiceBarTrafficDetailCell : UITableViewCell
+@property (nonatomic, strong) UILabel *titleLabel;
+@property (nonatomic, strong) UILabel *valueLabel;
+@property (nonatomic, strong) UIProgressView *progressView;
+- (void)configureTitle:(NSString *)title value:(NSString *)value bytes:(uint64_t)bytes peak:(uint64_t)peak;
+@end
+
+@implementation NiceBarTrafficDetailCell
+
+- (instancetype)initWithStyle:(UITableViewCellStyle)style reuseIdentifier:(NSString *)reuseIdentifier
+{
+    self = [super initWithStyle:style reuseIdentifier:reuseIdentifier];
+    if (self) {
+        self.selectionStyle = UITableViewCellSelectionStyleNone;
+
+        _titleLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _titleLabel.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightRegular];
+        _titleLabel.textColor = UIColor.labelColor;
+
+        _valueLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        _valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:14.0 weight:UIFontWeightSemibold];
+        _valueLabel.textColor = UIColor.secondaryLabelColor;
+        _valueLabel.textAlignment = NSTextAlignmentRight;
+        _valueLabel.adjustsFontSizeToFitWidth = YES;
+        _valueLabel.minimumScaleFactor = 0.75;
+
+        _progressView = [[UIProgressView alloc] initWithProgressViewStyle:UIProgressViewStyleDefault];
+        _progressView.progressTintColor = UIColor.systemBlueColor;
+        _progressView.trackTintColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.14];
+
+        for (UIView *view in @[_titleLabel, _valueLabel, _progressView]) {
+            view.translatesAutoresizingMaskIntoConstraints = NO;
+            [self.contentView addSubview:view];
+        }
+
+        [NSLayoutConstraint activateConstraints:@[
+            [_titleLabel.topAnchor constraintEqualToAnchor:self.contentView.topAnchor constant:11.0],
+            [_titleLabel.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16.0],
+
+            [_valueLabel.centerYAnchor constraintEqualToAnchor:_titleLabel.centerYAnchor],
+            [_valueLabel.leadingAnchor constraintGreaterThanOrEqualToAnchor:_titleLabel.trailingAnchor constant:12.0],
+            [_valueLabel.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16.0],
+            [_valueLabel.widthAnchor constraintGreaterThanOrEqualToConstant:76.0],
+
+            [_progressView.topAnchor constraintEqualToAnchor:_titleLabel.bottomAnchor constant:8.0],
+            [_progressView.leadingAnchor constraintEqualToAnchor:self.contentView.leadingAnchor constant:16.0],
+            [_progressView.trailingAnchor constraintEqualToAnchor:self.contentView.trailingAnchor constant:-16.0],
+            [_progressView.bottomAnchor constraintEqualToAnchor:self.contentView.bottomAnchor constant:-12.0],
+        ]];
+    }
+    return self;
+}
+
+- (void)configureTitle:(NSString *)title value:(NSString *)value bytes:(uint64_t)bytes peak:(uint64_t)peak
+{
+    self.titleLabel.text = title ?: @"";
+    self.valueLabel.text = value ?: @"";
+    float progress = peak > 0 ? (float)MIN(1.0, (double)bytes / (double)peak) : 0.0f;
+    [self.progressView setProgress:progress animated:NO];
+    self.progressView.hidden = bytes == 0;
+}
+
+@end
+
+@interface NiceBarTrafficHistoryViewController : UITableViewController
+@property (nonatomic, copy) NSDictionary<NSString *, NSString *> *history;
+@property (nonatomic, copy) NSArray<NSString *> *dateKeys;
+@property (nonatomic, assign) NiceBarTrafficHistoryRange selectedRange;
+@property (nonatomic, copy) NSArray<NiceBarTrafficChartItem *> *chartItems;
+@property (nonatomic, copy) NSArray<NSDictionary<NSString *, id> *> *detailRows;
+@property (nonatomic, assign) uint64_t rangeTotalBytes;
+@property (nonatomic, assign) uint64_t rangePeakBytes;
+@property (nonatomic, copy) NSString *rangeTitle;
+@property (nonatomic, copy) NSString *averageTitle;
+@end
+
+@implementation NiceBarTrafficHistoryViewController
+
+- (instancetype)init
+{
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    if (self) {
+        self.title = @"Traffic History";
+        self.selectedRange = NiceBarTrafficHistoryRangeWeek;
+        [self reloadTrafficHistory];
+    }
+    return self;
+}
+
+- (NSDateFormatter *)trafficDateFormatter
+{
+    static NSDateFormatter *formatter = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        formatter = [[NSDateFormatter alloc] init];
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        formatter.dateFormat = @"yyyyMMdd";
+    });
+    return formatter;
+}
+
+- (NSDateFormatter *)trafficDisplayDateFormatter
+{
+    static NSDateFormatter *formatter = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        formatter = [[NSDateFormatter alloc] init];
+        formatter.locale = NSLocale.currentLocale;
+        formatter.dateFormat = @"yyyy-MM-dd";
+    });
+    return formatter;
+}
+
+- (uint64_t)bytesForKey:(NSString *)key
+{
+    NSString *raw = self.history[key] ?: @"0";
+    return (uint64_t)strtoull(raw.UTF8String ?: "0", NULL, 10);
+}
+
+- (NSDate *)dateForKey:(NSString *)key
+{
+    if (key.length != 8) return nil;
+    return [[self trafficDateFormatter] dateFromString:key];
+}
+
+- (NSString *)keyForDate:(NSDate *)date
+{
+    if (!date) return nil;
+    return [[self trafficDateFormatter] stringFromDate:date];
+}
+
+- (NiceBarTrafficChartItem *)chartItemWithLabel:(NSString *)label bytes:(uint64_t)bytes
+{
+    NiceBarTrafficChartItem *item = [[NiceBarTrafficChartItem alloc] init];
+    item.label = label ?: @"";
+    item.bytes = bytes;
+    return item;
+}
+
+- (NSString *)titleForSelectedRange
+{
+    switch (self.selectedRange) {
+        case NiceBarTrafficHistoryRangeWeek: return @"This Week";
+        case NiceBarTrafficHistoryRangeMonth: return @"This Month";
+        case NiceBarTrafficHistoryRangeYear: return @"This Year";
+    }
+    return @"Traffic";
+}
+
+- (NSDate *)startOfUnit:(NSCalendarUnit)unit date:(NSDate *)date interval:(NSTimeInterval *)interval
+{
+    NSDate *start = nil;
+    NSTimeInterval localInterval = 0;
+    [NSCalendar.currentCalendar rangeOfUnit:unit startDate:&start interval:&localInterval forDate:date ?: NSDate.date];
+    if (interval) *interval = localInterval;
+    return start ?: date ?: NSDate.date;
+}
+
+- (void)rebuildDerivedTrafficData
+{
+    NSCalendar *calendar = NSCalendar.currentCalendar;
+    NSDate *now = NSDate.date;
+    NSMutableArray<NiceBarTrafficChartItem *> *chartItems = [NSMutableArray array];
+    NSMutableArray<NSDictionary<NSString *, id> *> *rows = [NSMutableArray array];
+    uint64_t total = 0;
+    uint64_t peak = 0;
+
+    if (self.selectedRange == NiceBarTrafficHistoryRangeWeek) {
+        NSDate *weekStart = [self startOfUnit:NSCalendarUnitWeekOfYear date:now interval:nil];
+        NSDateFormatter *weekdayFormatter = [[NSDateFormatter alloc] init];
+        weekdayFormatter.locale = NSLocale.currentLocale;
+        weekdayFormatter.dateFormat = @"EEE";
+
+        for (NSInteger i = 0; i < 7; i++) {
+            NSDate *date = [calendar dateByAddingUnit:NSCalendarUnitDay value:i toDate:weekStart options:0];
+            NSString *key = [self keyForDate:date];
+            uint64_t bytes = [self bytesForKey:key];
+            total += bytes;
+            if (bytes > peak) peak = bytes;
+            [chartItems addObject:[self chartItemWithLabel:[weekdayFormatter stringFromDate:date] bytes:bytes]];
+            if (bytes > 0) {
+                [rows addObject:@{
+                    @"title": [[self trafficDisplayDateFormatter] stringFromDate:date],
+                    @"detail": nicebarlite_format_traffic_bytes(bytes),
+                    @"bytes": @(bytes),
+                }];
+            }
+        }
+        self.averageTitle = @"Daily avg";
+    } else if (self.selectedRange == NiceBarTrafficHistoryRangeMonth) {
+        NSTimeInterval monthInterval = 0;
+        NSDate *monthStart = [self startOfUnit:NSCalendarUnitMonth date:now interval:&monthInterval];
+        NSUInteger days = (NSUInteger)MAX(1, (NSInteger)lrint(monthInterval / 86400.0));
+
+        for (NSUInteger i = 0; i < days; i++) {
+            NSDate *date = [calendar dateByAddingUnit:NSCalendarUnitDay value:(NSInteger)i toDate:monthStart options:0];
+            NSString *key = [self keyForDate:date];
+            uint64_t bytes = [self bytesForKey:key];
+            total += bytes;
+            if (bytes > peak) peak = bytes;
+            NSString *label = [NSString stringWithFormat:@"%lu", (unsigned long)(i + 1)];
+            [chartItems addObject:[self chartItemWithLabel:label bytes:bytes]];
+            if (bytes > 0) {
+                [rows addObject:@{
+                    @"title": [[self trafficDisplayDateFormatter] stringFromDate:date],
+                    @"detail": nicebarlite_format_traffic_bytes(bytes),
+                    @"bytes": @(bytes),
+                }];
+            }
+        }
+        self.averageTitle = @"Daily avg";
+    } else {
+        NSDate *yearStart = [self startOfUnit:NSCalendarUnitYear date:now interval:nil];
+
+        NSDateFormatter *monthTitleFormatter = [[NSDateFormatter alloc] init];
+        monthTitleFormatter.locale = NSLocale.currentLocale;
+        monthTitleFormatter.dateFormat = @"yyyy-MM";
+        for (NSInteger month = 1; month <= 12; month++) {
+            NSDate *monthStart = [calendar dateByAddingUnit:NSCalendarUnitMonth value:month - 1 toDate:yearStart options:0];
+            NSTimeInterval monthInterval = 0;
+            [calendar rangeOfUnit:NSCalendarUnitMonth startDate:NULL interval:&monthInterval forDate:monthStart];
+            NSUInteger days = (NSUInteger)MAX(1, (NSInteger)lrint(monthInterval / 86400.0));
+            uint64_t monthBytes = 0;
+            for (NSUInteger day = 0; day < days; day++) {
+                NSDate *date = [calendar dateByAddingUnit:NSCalendarUnitDay value:(NSInteger)day toDate:monthStart options:0];
+                monthBytes += [self bytesForKey:[self keyForDate:date]];
+            }
+            total += monthBytes;
+            if (monthBytes > peak) peak = monthBytes;
+            [chartItems addObject:[self chartItemWithLabel:[NSString stringWithFormat:@"%ld", (long)month] bytes:monthBytes]];
+            if (monthBytes > 0) {
+                [rows addObject:@{
+                    @"title": [monthTitleFormatter stringFromDate:monthStart],
+                    @"detail": nicebarlite_format_traffic_bytes(monthBytes),
+                    @"bytes": @(monthBytes),
+                }];
+            }
+        }
+        self.averageTitle = @"Monthly avg";
+    }
+
+    [rows sortUsingComparator:^NSComparisonResult(NSDictionary<NSString *, id> *a, NSDictionary<NSString *, id> *b) {
+        return [b[@"title"] compare:a[@"title"]];
+    }];
+
+    self.chartItems = chartItems;
+    self.detailRows = rows;
+    self.rangeTotalBytes = total;
+    self.rangePeakBytes = peak;
+    self.rangeTitle = [self titleForSelectedRange];
+}
+
+- (void)reloadTrafficHistory
+{
+    NSDictionary<NSString *, NSString *> *history = nicebarlite_traffic_history_snapshot() ?: @{};
+    self.history = history;
+    self.dateKeys = [[history allKeys] sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        return [b compare:a];
+    }];
+    [self rebuildDerivedTrafficData];
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 72.0;
+    [self.tableView registerClass:NiceBarTrafficSummaryCell.class forCellReuseIdentifier:@"traffic-summary"];
+    [self.tableView registerClass:NiceBarTrafficDetailCell.class forCellReuseIdentifier:@"traffic-detail"];
+    self.navigationItem.rightBarButtonItem =
+        [[UIBarButtonItem alloc] initWithBarButtonSystemItem:UIBarButtonSystemItemRefresh
+                                                      target:self
+                                                      action:@selector(refreshTapped)];
+}
+
+- (void)refreshTapped
+{
+    [self reloadTrafficHistory];
+    [self.tableView reloadData];
+}
+
+- (void)rangeChanged:(NSInteger)selectedIndex
+{
+    self.selectedRange = (NiceBarTrafficHistoryRange)MAX(0, MIN(2, selectedIndex));
+    [self rebuildDerivedTrafficData];
+    [self.tableView reloadData];
+}
+
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView
+{
+    (void)tableView;
+    return 2;
+}
+
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
+{
+    (void)tableView;
+    if (section == 0) return 1;
+    return MAX((NSInteger)self.detailRows.count, 1);
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
+{
+    (void)tableView;
+    if (section == 1) {
+        return self.selectedRange == NiceBarTrafficHistoryRangeYear ? @"Monthly Details" : @"Daily Details";
+    }
+    return nil;
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section
+{
+    (void)tableView;
+    if (section != 1) return nil;
+    return [NSString stringWithFormat:@"Stored at %@", nicebarlite_traffic_store_path()];
+}
+
+- (NSString *)summaryAverageText
+{
+    NSUInteger divisor = 1;
+    if (self.selectedRange == NiceBarTrafficHistoryRangeYear) {
+        divisor = (NSUInteger)MAX(1, [NSCalendar.currentCalendar component:NSCalendarUnitMonth fromDate:NSDate.date]);
+    } else if (self.selectedRange == NiceBarTrafficHistoryRangeMonth) {
+        NSDate *start = [self startOfUnit:NSCalendarUnitMonth date:NSDate.date interval:nil];
+        NSInteger elapsed = [NSCalendar.currentCalendar components:NSCalendarUnitDay fromDate:start toDate:NSDate.date options:0].day + 1;
+        divisor = (NSUInteger)MAX(1, elapsed);
+    } else {
+        NSDate *start = [self startOfUnit:NSCalendarUnitWeekOfYear date:NSDate.date interval:nil];
+        NSInteger elapsed = [NSCalendar.currentCalendar components:NSCalendarUnitDay fromDate:start toDate:NSDate.date options:0].day + 1;
+        divisor = (NSUInteger)MAX(1, elapsed);
+    }
+    uint64_t average = divisor > 0 ? self.rangeTotalBytes / divisor : 0;
+    return [NSString stringWithFormat:@"%@ %@", self.averageTitle ?: @"Avg", nicebarlite_format_traffic_bytes(average)];
+}
+
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (indexPath.section == 0) {
+        NiceBarTrafficSummaryCell *cell = [tableView dequeueReusableCellWithIdentifier:@"traffic-summary" forIndexPath:indexPath];
+        __weak typeof(self) weakSelf = self;
+        cell.rangeChanged = ^(NSInteger selectedIndex) {
+            [weakSelf rangeChanged:selectedIndex];
+        };
+        [cell configureTitle:self.rangeTitle ?: @"Traffic"
+                       total:nicebarlite_format_traffic_bytes(self.rangeTotalBytes)
+                     average:[self summaryAverageText]
+                        peak:[NSString stringWithFormat:@"Peak %@", nicebarlite_format_traffic_bytes(self.rangePeakBytes)]
+                       range:self.selectedRange
+                       items:self.chartItems ?: @[]];
+        return cell;
+    }
+
+    if (self.detailRows.count == 0) {
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"traffic-empty"];
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"traffic-empty"];
+        }
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.accessoryType = UITableViewCellAccessoryNone;
+        cell.textLabel.text = @"No usage in this range";
+        cell.textLabel.textColor = UIColor.secondaryLabelColor;
+        return cell;
+    }
+
+    NSDictionary<NSString *, id> *row = self.detailRows[(NSUInteger)indexPath.row];
+    NiceBarTrafficDetailCell *cell = [tableView dequeueReusableCellWithIdentifier:@"traffic-detail" forIndexPath:indexPath];
+    [cell configureTitle:row[@"title"]
+                   value:row[@"detail"]
+                   bytes:[row[@"bytes"] unsignedLongLongValue]
+                    peak:self.rangePeakBytes];
+    return cell;
+}
+
 @end
 
 @interface DSRespringOverlayView : UIView
@@ -7032,6 +7619,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     return @[
         @{ @"kind": @"nicebar-grid" },
         @{ @"kind": @"toggle", @"key": kSettingsNiceBarLiteCelsius, @"title": @"Use Celsius" },
+        @{ @"kind": @"button", @"title": @"Traffic History", @"action": @"nicebar-traffic-history" },
         @{ @"kind": @"button", @"title": @"Apply Now", @"action": @"nicebar-apply" },
     ];
 }
@@ -7360,7 +7948,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         return @"Tap a position box to move the network speed pill. Position changes apply silently during the active SpringBoard session.";
     }
     if (s == SectionNiceBarLite) {
-        return @"Tap a box to choose what it shows. NiceBar Lite places plain text in the configured status-bar slots around the notch or Dynamic Island, including the bottom center position. Weather is fetched from your current GPS location through Open-Meteo and follows the Celsius toggle.";
+        return @"Tap a box to choose what it shows. NiceBar Lite places plain text in the configured status-bar slots around the notch or Dynamic Island, including the bottom center position. Today traffic is persisted per local date and written to disk with a short throttle. Weather is fetched from your current GPS location through Open-Meteo and follows the Celsius toggle.";
     }
     if (s == SectionRSSI) {
         return @"Adds a UILabel as a sibling of each STUI signal view (no new UIWindow), refreshed every second. Cellular shows live RSRP dBm (sign implicit). WiFi shows the bar count (0-4); the wifid XPC dBm path crashed SpringBoard in prior tests.";
@@ -10217,6 +10805,11 @@ void cyanide_present_contact(UIViewController *host)
         NSDictionary *row = [self rowsForSection:indexPath.section][indexPath.row];
         if (![row[@"kind"] isEqualToString:@"button"]) return;
         NSString *action = row[@"action"];
+        if ([action isEqualToString:@"nicebar-traffic-history"]) {
+            NiceBarTrafficHistoryViewController *vc = [[NiceBarTrafficHistoryViewController alloc] init];
+            [self.navigationController pushViewController:vc animated:YES];
+            return;
+        }
         if ([action isEqualToString:@"nicebar-apply"]) {
             if (!g_springboard_rc_ready) {
                 log_user("[NICEBAR] Needs an active SpringBoard session. Hit Run first.\n");
