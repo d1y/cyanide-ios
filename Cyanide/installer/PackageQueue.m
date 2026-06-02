@@ -16,13 +16,19 @@ NSString * const PackageQueueDidChangeNotification = @"PackageQueueDidChangeNoti
 
 static BOOL PackageRequiresThemerTheme(Package *package)
 {
-    return [package.identifier isEqualToString:@"com.darksword.themer"];
+    return [package.identifier isEqualToString:@"com.darksword.themer"] ||
+           [package.identifier isEqualToString:@"com.darksword.snowboardlite"];
 }
 
 static BOOL PackageCanQueueInstall(Package *package)
 {
-    if (!PackageRequiresThemerTheme(package)) return YES;
-    return settings_themer_has_selected_theme();
+    if ([package.identifier isEqualToString:@"com.darksword.themer"]) {
+        return settings_themer_has_selected_theme();
+    }
+    if ([package.identifier isEqualToString:@"com.darksword.snowboardlite"]) {
+        return settings_snowboardlite_has_selected_theme();
+    }
+    return YES;
 }
 
 @implementation PackageQueue

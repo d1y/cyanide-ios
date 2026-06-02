@@ -27,9 +27,14 @@ static NSString * const kTipsExpandedDefault    = @"installer.tipsExpanded";
 
 - (BOOL)packageNeedsThemeBeforeInstall:(Package *)pkg
 {
-    return [pkg.identifier isEqualToString:@"com.darksword.themer"] &&
-           !pkg.isInstalled &&
-           !settings_themer_has_selected_theme();
+    if (pkg.isInstalled) return NO;
+    if ([pkg.identifier isEqualToString:@"com.darksword.themer"]) {
+        return !settings_themer_has_selected_theme();
+    }
+    if ([pkg.identifier isEqualToString:@"com.darksword.snowboardlite"]) {
+        return !settings_snowboardlite_has_selected_theme();
+    }
+    return NO;
 }
 
 - (void)viewDidLoad
@@ -729,8 +734,10 @@ static NSString * const kTipsExpandedDefault    = @"installer.tipsExpanded";
 
 - (void)presentThemeRequiredAlertForPackage:(Package *)pkg
 {
+    BOOL sbl = [pkg.identifier isEqualToString:@"com.darksword.snowboardlite"];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select a Theme"
-                                                                   message:@"Cyanide Themer needs a selected theme before it can be queued. Choose iOS 6 Theme or import a custom theme first."
+                                                                   message:sbl ? @"SnowBoard Lite needs an active theme before it can be queued. Choose iOS 6 Theme or import a folder, .zip, .deb, or direct URL first."
+                                                                               : @"Cyanide Themer needs a selected theme before it can be queued. Choose iOS 6 Theme or import a custom theme first."
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Open Theme Settings"
                                              style:UIAlertActionStyleDefault

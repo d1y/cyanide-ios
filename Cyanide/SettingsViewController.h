@@ -58,6 +58,9 @@ extern NSString * const kSettingsThemerThemeID;
 extern NSString * const kSettingsThemerCustomThemePath;
 extern NSString * const kSettingsThemerCustomThemeName;
 
+extern NSString * const kSettingsSnowBoardLiteEnabled;
+extern NSString * const kSettingsSnowBoardLiteSelectedThemeID;
+
 extern NSString * const kSettingsLiveWPEnabled;
 extern NSString * const kSettingsLiveWPVideoPath;
 
@@ -83,6 +86,8 @@ void cyanide_present_contact(UIViewController *host);
 BOOL settings_apply_ota_disabled(BOOL disabled);
 BOOL settings_themer_has_selected_theme(void);
 NSString *settings_themer_selected_theme_display_name(void);
+BOOL settings_snowboardlite_has_selected_theme(void);
+NSString *settings_snowboardlite_selected_theme_display_name(void);
 
 // Synchronously runs kexploit and writes/clears the NanoRegistry pairing-
 // compatibility override using the four numbers currently in NSUserDefaults

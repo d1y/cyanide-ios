@@ -173,14 +173,20 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 
 - (BOOL)requiresThemeSelection
 {
-    return [self.package.identifier isEqualToString:@"com.darksword.themer"];
+    return [self.package.identifier isEqualToString:@"com.darksword.themer"] ||
+           [self.package.identifier isEqualToString:@"com.darksword.snowboardlite"];
 }
 
 - (BOOL)needsThemeBeforeInstall
 {
-    return [self requiresThemeSelection] &&
-           !self.package.isInstalled &&
-           !settings_themer_has_selected_theme();
+    if (![self requiresThemeSelection] || self.package.isInstalled) return NO;
+    if ([self.package.identifier isEqualToString:@"com.darksword.themer"]) {
+        return !settings_themer_has_selected_theme();
+    }
+    if ([self.package.identifier isEqualToString:@"com.darksword.snowboardlite"]) {
+        return !settings_snowboardlite_has_selected_theme();
+    }
+    return NO;
 }
 
 - (void)viewDidLoad
@@ -425,8 +431,10 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 
 - (void)promptSelectThemeBeforeInstall
 {
+    BOOL sbl = [self.package.identifier isEqualToString:@"com.darksword.snowboardlite"];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Select a Theme"
-                                                                   message:@"Cyanide Themer needs a selected theme before it can be queued. Choose iOS 6 Theme or import a custom theme first."
+                                                                   message:sbl ? @"SnowBoard Lite needs an active theme before it can be queued. Choose iOS 6 Theme or import a folder, .zip, .deb, or direct URL first."
+                                                                               : @"Cyanide Themer needs a selected theme before it can be queued. Choose iOS 6 Theme or import a custom theme first."
                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Open Theme Settings"
                                              style:UIAlertActionStyleDefault

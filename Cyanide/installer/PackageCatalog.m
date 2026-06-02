@@ -20,7 +20,8 @@ static const NSInteger kSecPowercuff    = 11;
 static const NSInteger kSecLayoutExtras = 13;
 static const NSInteger kSecNanoRegistry = 14;
 static const NSInteger kSecThemer       = 15;
-static const NSInteger kSecLiveWP       = 16;
+static const NSInteger kSecSnowBoardLite = 16;
+static const NSInteger kSecLiveWP       = 17;
 
 + (NSArray<Package *> *)allPackages
 {
@@ -166,6 +167,20 @@ static const NSInteger kSecLiveWP       = 16;
         themer.settingsSection = kSecThemer;
         themer.unstableWarning = @"⚠️ Beta: icon theming works but RemoteCall-backed changes may need re-applying after a respring or SpringBoard restart. Pick a theme in Settings > Cyanide Themer before running.";
 
+        Package *snowboardLite = [[Package alloc] initWithIdentifier:@"com.darksword.snowboardlite"
+                                           name:@"SnowBoard Lite"
+                               shortDescription:@"Local SnowBoard-style icon theme library"
+                                longDescription:@"Imports icon themes into a local library and lets you switch the active theme from a native iOS-style settings page.\n\nThis is separate from Cyanide Themer. Current scope is intentionally lightweight: bundled iOS 6 Theme, local folder/.zip/.deb imports, and direct archive URL imports recursively scan IconBundles directories and convert PNG assets into Cyanide's existing icon replacement pipeline. Full SnowBoard parity, masks, overlays, UIImages, badges, docks, and folders are out of scope for the first milestone."
+                                        version:version
+                                         author:@"d1y"
+                                       category:@"Other Tweaks"
+                                     symbolName:@"square.stack.3d.up.fill"
+                                          kind:PackageInstallKindToggle
+                                     enabledKey:kSettingsSnowBoardLiteEnabled
+                                          isNew:YES];
+        snowboardLite.settingsSection = kSecSnowBoardLite;
+        snowboardLite.unstableWarning = @"⚠️ Preview: import and select a SnowBoard Lite theme before queuing or applying.";
+
         Package *liveWP = [[Package alloc] initWithIdentifier:@"com.darksword.livewp"
                                            name:@"LiveWP"
                                shortDescription:@"Video wallpaper for lock screen and home screen"
@@ -291,6 +306,7 @@ static const NSInteger kSecLiveWP       = 16;
             nanoRegistry,
             typeBanner,
             themer,
+            snowboardLite,
             liveWP,
         ];
     });

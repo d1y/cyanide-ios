@@ -20,6 +20,7 @@
 #import "tweaks/nano_registry.h"
 #import "tweaks/killallapps.h"
 #import "tweaks/themer.h"
+#import "tweaks/snowboardlite.h"
 #import "tweaks/livewp.h"
 
 #import <objc/runtime.h>
@@ -34,6 +35,7 @@
 #import "installer/PackageQueue.h"
 #import "docs/DocsViewController.h"
 #import "UpdateChecker.h"
+#import "SBLArchiveExtractor.h"
 #import <WebKit/WebKit.h>
 #import <MessageUI/MessageUI.h>
 #import <CoreLocation/CoreLocation.h>
@@ -793,6 +795,9 @@ NSString * const kSettingsThemerThemeID = @"ThemerThemeID";
 NSString * const kSettingsThemerCustomThemePath = @"ThemerCustomThemePath";
 NSString * const kSettingsThemerCustomThemeName = @"ThemerCustomThemeName";
 
+NSString * const kSettingsSnowBoardLiteEnabled = @"SnowBoardLiteEnabled";
+NSString * const kSettingsSnowBoardLiteSelectedThemeID = @"SnowBoardLiteSelectedThemeID";
+
 NSString * const kSettingsLiveWPEnabled = @"LiveWPEnabled";
 NSString * const kSettingsLiveWPVideoPath = @"LiveWPVideoPath";
 
@@ -880,6 +885,7 @@ static volatile int g_livewp_live_running = 0;
 static volatile int g_livewp_live_stop_requested = 0;
 static volatile int g_themer_repair_running = 0;
 static volatile uint64_t g_themer_repair_generation = 0;
+static const BOOL kThemerDynamicRepairEnabled = NO;
 static volatile int g_app_in_background = 0;
 static volatile int g_screen_awake = 1;
 static volatile int g_screen_locked = 0;
@@ -1031,6 +1037,7 @@ static NSArray<NSString *> *settings_rc_backed_tweak_keys(void)
             kSettingsDSDoubleTapToLock,
             kSettingsLayoutExtrasEnabled,
             kSettingsThemerEnabled,
+            kSettingsSnowBoardLiteEnabled,
             kSettingsLiveWPEnabled,
             kSettingsNiceBarLiteEnabled,
         ];
@@ -1611,8 +1618,10 @@ static BOOL settings_has_persistent_springboard_remote_call_user(void)
     }
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    return [d boolForKey:kSettingsThemerEnabled] &&
-           settings_tweak_is_applied(kSettingsThemerEnabled);
+    return ([d boolForKey:kSettingsThemerEnabled] &&
+            settings_tweak_is_applied(kSettingsThemerEnabled)) ||
+           ([d boolForKey:kSettingsSnowBoardLiteEnabled] &&
+            settings_tweak_is_applied(kSettingsSnowBoardLiteEnabled));
 }
 
 static void settings_wait_live_loops_stopped_for_switch(const char *reason)
@@ -2822,6 +2831,15 @@ static NSDictionary<NSString *, NSData *> *settings_themer_load_plist_theme(NSSt
            (unsigned long)raw.length,
            plistPath.UTF8String);
     return out;
+}
+
+static NSUInteger settings_themer_builtin_ios6_icon_count(void)
+{
+    static NSUInteger cachedCount = NSUIntegerMax;
+    if (cachedCount != NSUIntegerMax) return cachedCount;
+    NSDictionary *dict = settings_themer_load_plist_theme(settings_themer_builtin_ios6_path());
+    cachedCount = dict.count;
+    return cachedCount;
 }
 
 // Per-bundle icon swap. A theme must be selected explicitly: either the bundled
@@ -4225,11 +4243,14 @@ static void settings_start_typebanner_live_loop(void)
 
 static void settings_start_themer_live_loop(void)
 {
+    if (!kThemerDynamicRepairEnabled) return;
     if (!settings_device_supported()) return;
     if (settings_cleanup_in_progress()) return;
+    if (g_settings_actions_running) return;
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    if (![d boolForKey:kSettingsThemerEnabled]) return;
+    if (![d boolForKey:kSettingsThemerEnabled] &&
+        ![d boolForKey:kSettingsSnowBoardLiteEnabled]) return;
     if (!g_springboard_rc_ready) return;
 
     if (__sync_lock_test_and_set(&g_themer_live_running, 1)) {
@@ -4267,7 +4288,8 @@ static void settings_start_themer_live_loop(void)
                                                    settings_live_interval(kThemerLiveIntervalUS,
                                                                           kThemerLiveBackgroundIntervalUS),
                                                    &g_themer_live_stop_requested);
-            while ([d boolForKey:kSettingsThemerEnabled] &&
+            while (([d boolForKey:kSettingsThemerEnabled] ||
+                    [d boolForKey:kSettingsSnowBoardLiteEnabled]) &&
                    !settings_cleanup_in_progress() &&
                    !g_themer_live_stop_requested &&
                    tick < maxTicks) {
@@ -4296,7 +4318,8 @@ static void settings_start_themer_live_loop(void)
                 failures = ok ? 0 : failures + 1;
 
                 tick++;
-                if (![d boolForKey:kSettingsThemerEnabled] ||
+                if ((! [d boolForKey:kSettingsThemerEnabled] &&
+                     ! [d boolForKey:kSettingsSnowBoardLiteEnabled]) ||
                     g_themer_live_stop_requested ||
                     tick >= maxTicks) break;
 
@@ -4308,7 +4331,7 @@ static void settings_start_themer_live_loop(void)
         } @finally {
             printf("[SETTINGS] Themer dynamic live loop exited ticks=%lu enabled=%d failures=%lu stop=%d\n",
                    (unsigned long)tick,
-                   [d boolForKey:kSettingsThemerEnabled],
+                   [d boolForKey:kSettingsThemerEnabled] || [d boolForKey:kSettingsSnowBoardLiteEnabled],
                    (unsigned long)failures,
                    g_themer_live_stop_requested);
             __sync_lock_release(&g_themer_live_running);
@@ -4480,11 +4503,14 @@ static void settings_resume_livewp_after_wake_async(const char *reason)
 static void settings_schedule_themer_repair_burst_internal(const char *reason, BOOL force)
 {
     (void)force;
+    if (!kThemerDynamicRepairEnabled) return;
     if (!settings_device_supported()) return;
     if (settings_cleanup_in_progress()) return;
+    if (g_settings_actions_running) return;
 
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    if (![d boolForKey:kSettingsThemerEnabled]) return;
+    if (![d boolForKey:kSettingsThemerEnabled] &&
+        ![d boolForKey:kSettingsSnowBoardLiteEnabled]) return;
     if (!g_springboard_rc_ready) return;
 
     __sync_add_and_fetch(&g_themer_repair_generation, 1);
@@ -4499,7 +4525,8 @@ static void settings_schedule_themer_repair_burst_internal(const char *reason, B
                reason ? ": " : "", reason ?: "");
 
         @try {
-            while ([d boolForKey:kSettingsThemerEnabled] &&
+            while (([d boolForKey:kSettingsThemerEnabled] ||
+                    [d boolForKey:kSettingsSnowBoardLiteEnabled]) &&
                    !settings_cleanup_in_progress() &&
                    !g_themer_live_stop_requested &&
                    tick < 1) {
@@ -4618,6 +4645,7 @@ void settings_application_did_enter_background(void)
         ([d boolForKey:kSettingsStatBarEnabled]     && g_springboard_rc_ready) ||
         ([d boolForKey:kSettingsNiceBarLiteEnabled] && g_springboard_rc_ready) ||
         ([d boolForKey:kSettingsThemerEnabled]      && g_springboard_rc_ready) ||
+        ([d boolForKey:kSettingsSnowBoardLiteEnabled] && g_springboard_rc_ready) ||
         [d boolForKey:kSettingsTypeBannerEnabled];
     if (anyLiveLoopNeeded) {
         if ([d boolForKey:kSettingsKeepAlive]) {
@@ -4763,6 +4791,7 @@ static BOOL settings_key_affects_package_state(NSString *key)
            [key isEqualToString:kSettingsAxonLiteEnabled] ||
            [key isEqualToString:kSettingsTypeBannerEnabled] ||
            [key isEqualToString:kSettingsThemerEnabled] ||
+           [key isEqualToString:kSettingsSnowBoardLiteEnabled] ||
            [key isEqualToString:kSettingsLiveWPEnabled] ||
            settings_key_is_dark_tweak(key);
 }
@@ -5191,6 +5220,9 @@ void settings_register_defaults(void)
         kSettingsThemerCustomThemePath: @"",
         kSettingsThemerCustomThemeName: @"",
 
+        kSettingsSnowBoardLiteEnabled: @NO,
+        kSettingsSnowBoardLiteSelectedThemeID: @"",
+
         kSettingsLiveWPEnabled: @NO,
         kSettingsLiveWPVideoPath: @"",
 
@@ -5212,6 +5244,11 @@ void settings_register_defaults(void)
     if ([defaults boolForKey:kSettingsThemerEnabled] &&
         !settings_themer_has_selected_theme()) {
         [defaults setBool:NO forKey:kSettingsThemerEnabled];
+        [defaults synchronize];
+    }
+    if ([defaults boolForKey:kSettingsSnowBoardLiteEnabled] &&
+        !settings_snowboardlite_has_selected_theme()) {
+        [defaults setBool:NO forKey:kSettingsSnowBoardLiteEnabled];
         [defaults synchronize];
     }
     settings_install_screen_awake_observers();
@@ -5255,11 +5292,12 @@ void settings_run_actions(void)
             BOOL runAxonLite = [d boolForKey:kSettingsAxonLiteEnabled];
             BOOL runTypeBanner = [d boolForKey:kSettingsTypeBannerEnabled];
             BOOL runThemer = [d boolForKey:kSettingsThemerEnabled];
+            BOOL runSnowBoardLite = [d boolForKey:kSettingsSnowBoardLiteEnabled];
             BOOL runLayoutExtras = [d boolForKey:kSettingsLayoutExtrasEnabled];
             BOOL runLiveWP = [d boolForKey:kSettingsLiveWPEnabled];
             // TypeBanner prewarms its hidden SpringBoard window during Apply
             // and reuses the open SpringBoard session for text-only updates.
-            BOOL needsSpringBoard = runSandboxEscape || runSBC || runDarkTweaks || runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runLayoutExtras || runTypeBanner || runThemer || runLiveWP;
+            BOOL needsSpringBoard = runSandboxEscape || runSBC || runDarkTweaks || runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runLayoutExtras || runTypeBanner || runThemer || runSnowBoardLite || runLiveWP;
 
             NSUInteger total = 1;
             if (patchSandboxExt) total++;
@@ -5270,6 +5308,7 @@ void settings_run_actions(void)
             if (runDarkTweaks) total++;
             if (runLayoutExtras) total++;
             if (runThemer) total++;
+            if (runSnowBoardLite) total++;
             if (runStatBar) total++;
             if (runNSBar) total++;
             if (runNiceBarLite) total++;
@@ -5495,6 +5534,20 @@ void settings_run_actions(void)
                         }
                     }
 
+                    if (runSnowBoardLite) {
+                        settings_progress(&step, total, "Applying SnowBoard Lite");
+                        bool ok = settings_apply_snowboardlite_from_defaults_locked(d);
+                        settings_mark_tweak_applied(kSettingsSnowBoardLiteEnabled, ok);
+                        printf("[SETTINGS] SnowBoard Lite result=%d\n", ok);
+                        log_user("%s SnowBoard Lite %s.\n",
+                                 ok ? "[OK]" : "[WARN]",
+                                 ok ? "applied" : "did not apply cleanly");
+                        cyanide_upload_log_milestone(ok ? @"snowboardlite-applied" : @"snowboardlite-warning");
+                        if (ok) {
+                            settings_start_themer_live_loop();
+                        }
+                    }
+
                     if (runStatBar) {
                         settings_progress(&step, total, "Starting StatBar overlay and 1s feed");
                         bool ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
@@ -5710,6 +5763,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionLayoutExtras,
     SectionNanoRegistry,
     SectionThemer,
+    SectionSnowBoardLite,
     SectionLiveWP,
     SectionCount,
 };
@@ -5813,6 +5867,10 @@ static BOOL livewp_response_is_video_download(NSURLResponse *response)
 @property (nonatomic, strong) UIActivityIndicatorView *activityView;
 @property (nonatomic, strong) UIView *cardShadowView;
 @property (nonatomic, strong) UIVisualEffectView *cardView;
+@property (nonatomic, copy) NSString *titleText;
+@property (nonatomic, copy) NSString *savingStatusText;
+@property (nonatomic, copy) NSString *iconSymbolName;
+@property (nonatomic, strong) UIColor *accentColor;
 @property (nonatomic, copy) void (^cancelHandler)(void);
 - (void)updateWithReceivedBytes:(int64_t)received expectedBytes:(int64_t)expected host:(NSString *)host;
 @end
@@ -5842,16 +5900,19 @@ static BOOL livewp_response_is_video_download(NSURLResponse *response)
 
     UIView *content = self.cardView.contentView;
 
+    UIColor *accent = self.accentColor ?: UIColor.systemBlueColor;
+    NSString *iconName = self.iconSymbolName.length ? self.iconSymbolName : @"arrow.down.circle.fill";
+
     UIView *iconPlate = [[UIView alloc] init];
     iconPlate.translatesAutoresizingMaskIntoConstraints = NO;
-    iconPlate.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.13];
+    iconPlate.backgroundColor = [accent colorWithAlphaComponent:0.13];
     iconPlate.layer.cornerRadius = 22.0;
     iconPlate.layer.cornerCurve = kCACornerCurveContinuous;
     [content addSubview:iconPlate];
 
-    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"arrow.down.circle.fill"]];
+    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:iconName]];
     icon.translatesAutoresizingMaskIntoConstraints = NO;
-    icon.tintColor = UIColor.systemBlueColor;
+    icon.tintColor = accent;
     icon.contentMode = UIViewContentModeScaleAspectFit;
     [iconPlate addSubview:icon];
 
@@ -5863,7 +5924,7 @@ static BOOL livewp_response_is_video_download(NSURLResponse *response)
 
     UILabel *titleLabel = [[UILabel alloc] init];
     titleLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    titleLabel.text = @"Downloading Video";
+    titleLabel.text = self.titleText.length ? self.titleText : @"Downloading Video";
     titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
     titleLabel.textColor = UIColor.labelColor;
     [content addSubview:titleLabel];
@@ -5887,7 +5948,7 @@ static BOOL livewp_response_is_video_download(NSURLResponse *response)
 
     self.progressFillView = [[UIView alloc] init];
     self.progressFillView.translatesAutoresizingMaskIntoConstraints = NO;
-    self.progressFillView.backgroundColor = UIColor.systemBlueColor;
+    self.progressFillView.backgroundColor = accent;
     self.progressFillView.layer.cornerRadius = 3.0;
     self.progressFillView.layer.cornerCurve = kCACornerCurveContinuous;
     self.progressFillView.hidden = YES;
@@ -5997,7 +6058,9 @@ static BOOL livewp_response_is_video_download(NSURLResponse *response)
         self.progressLabel.hidden = NO;
         self.percentLabel.hidden = NO;
         float progress = (float)MIN(1.0, MAX(0.0, (double)received / (double)expected));
-        self.statusLabel.text = @"Saving to LiveWP Downloads";
+        self.statusLabel.text = self.savingStatusText.length
+            ? self.savingStatusText
+            : @"Saving to LiveWP Downloads";
         self.progressLabel.text = [NSString stringWithFormat:@"%@ of %@",
                                    [NSByteCountFormatter stringFromByteCount:received countStyle:NSByteCountFormatterCountStyleFile],
                                    [NSByteCountFormatter stringFromByteCount:expected countStyle:NSByteCountFormatterCountStyleFile]];
@@ -6390,7 +6453,7 @@ createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
 
 @end
 
-@interface SettingsViewController () <UIDocumentPickerDelegate, NSURLSessionDownloadDelegate>
+@interface SettingsViewController () <UIDocumentPickerDelegate, NSURLSessionDownloadDelegate, UIContextMenuInteractionDelegate>
 @property (nonatomic, strong) UISegmentedControl *powercuffSegmented;
 @property (nonatomic, assign) BOOL pendingManualActionsReload;
 @property (nonatomic, assign) BOOL detailMode;
@@ -6401,6 +6464,14 @@ createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
 @property (nonatomic, strong) CyanideLiveWPDownloadProgressViewController *livewpDownloadProgressController;
 @property (nonatomic, strong) NSURL *livewpDownloadURL;
 @property (nonatomic, strong) NSURLRequest *livewpDownloadRequest;
+@property (nonatomic, strong) NSURLSession *sblDownloadSession;
+@property (nonatomic, strong) NSURLSessionDownloadTask *sblDownloadTask;
+@property (nonatomic, strong) CyanideLiveWPDownloadProgressViewController *sblDownloadProgressController;
+@property (nonatomic, strong) NSURL *sblDownloadURL;
+@property (nonatomic, strong) NSURLRequest *sblDownloadRequest;
+@property (nonatomic, copy) NSString *sblDownloadDisplayName;
+@property (nonatomic, copy) NSString *pendingThemeImportMode;
+@property (nonatomic, copy) NSString *pendingSnowBoardLiteImportName;
 @end
 
 // Singleton delegate so MFMailCompose's host VC doesn't need to conform. Lives
@@ -7729,6 +7800,122 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     return rows;
 }
 
+- (NSArray<NSDictionary *> *)snowBoardLiteOnlineDownloadItems
+{
+    return @[
+        @{ @"title": @"锤子图标",
+           @"subtitle": @"Smartisan OS icon pack from GitHub",
+           @"symbol": @"hammer.fill",
+           @"color": UIColor.systemOrangeColor,
+           @"url": @"https://github.com/Sunbelife/Snowboard-IconPack-for-Smartisan-OS/archive/refs/heads/master.zip",
+           @"previewURLs": @[
+               @"https://camo.githubusercontent.com/74d7a2c38624363d411bfb835bf12ef1d6565a796e171fb1a176102b4349a541/68747470733a2f2f747661312e73696e61696d672e636e2f6c617267652f30303753385a496c67793167663930633861706f626a3331696a3075306b38762e6a7067",
+           ] },
+        @{ @"title": @"Junipero",
+           @"subtitle": @"Havoc theme by XerusDesign",
+           @"symbol": @"leaf.fill",
+           @"color": UIColor.systemGreenColor,
+           @"url": @"https://havoc.app/api/download/package/65c502227f817e1cfc99c962/com.xerusdesign.junipero_1.2_iphoneos-arm64.deb",
+           @"previewURLs": @[
+               @"https://media.havoc.app/63ba128b15250baf94106f88",
+               @"https://media.havoc.app/63ba129915250baf941070df",
+               @"https://media.havoc.app/63b8c3adfcedf02b6a93e8f9",
+               @"https://media.havoc.app/63b8c3bbfcedf02b6a93e9ce",
+               @"https://media.havoc.app/63b8c3f1fcedf02b6a93ec75",
+           ] },
+        @{ @"title": @"Miso",
+           @"subtitle": @"Havoc cartoon glyph theme",
+           @"symbol": @"face.smiling.fill",
+           @"color": UIColor.systemYellowColor,
+           @"url": @"https://havoc.app/api/download/package/6222d5091cee0e538b47d1cf/co.shoyu.miso_1.0_iphoneos-arm64.deb",
+           @"previewURLs": @[
+               @"https://media.havoc.app/6222d70bb1aa0e8855a5a272",
+           ] },
+        @{ @"title": @"Oxyg3n",
+           @"subtitle": @"Havoc colorful iOS theme",
+           @"symbol": @"paintpalette.fill",
+           @"color": UIColor.systemCyanColor,
+           @"url": @"https://havoc.app/api/download/package/620bfb17325c9a748303d7a1/com.cachetes.oxyg3n_2.4_iphoneos-arm64.deb",
+           @"previewURLs": @[
+               @"https://media.havoc.app/620bfafc325c9a748303d72b",
+               @"https://media.havoc.app/620bfafd325c9a748303d72d",
+               @"https://media.havoc.app/620bfafd325c9a748303d72f",
+           ] },
+        @{ @"title": @"Felicity Pro",
+           @"subtitle": @"Havoc detailed icon theme",
+           @"symbol": @"sparkle",
+           @"color": UIColor.systemIndigoColor,
+           @"url": @"https://havoc.app/api/download/package/6456d857fd175b7b49aba4fb/com.xandesign.felicitypro_4.1_iphoneos-arm64.deb",
+           @"previewURLs": @[
+               @"https://media.havoc.app/6456df8afd175b7b49abd6c9",
+               @"https://media.havoc.app/6456dfd7fd175b7b49abdaf0",
+           ] },
+        @{ @"title": @"shitboard",
+           @"subtitle": @"a 'very good' snowboard ios theme",
+           @"symbol": @"sparkles",
+           @"color": UIColor.systemPinkColor,
+           @"url": @"https://github.com/machineonamission/shitboard/releases/download/1.2/shitboard.deb",
+           @"previewURLs": @[
+               @"https://raw.githubusercontent.com/machineonamission/shitboard/refs/heads/master/preview.png",
+           ] },
+    ];
+}
+
+- (NSArray<NSDictionary *> *)snowBoardLiteRows
+{
+    NSArray<NSDictionary *> *themes = settings_sbl_load_manifest();
+    NSDictionary *selectedTheme = settings_sbl_selected_theme();
+    BOOL selectedBuiltinIOS6 = settings_sbl_selected_builtin_ios6();
+    BOOL hasActiveTheme = settings_snowboardlite_has_selected_theme();
+
+    NSMutableArray<NSDictionary *> *libraryItems = [NSMutableArray array];
+    [libraryItems addObject:@{
+        @"id": kSnowBoardLiteThemeBuiltinIOS6,
+        @"title": @"iOS 6 Theme",
+        @"sourceType": @"built-in",
+        @"iconCount": @(settings_themer_builtin_ios6_icon_count()),
+        @"subtitle": @"Built-in classic icon set",
+        @"builtIn": @YES,
+        @"selected": @(selectedBuiltinIOS6),
+    }];
+
+    NSString *selectedID = selectedBuiltinIOS6 ? nil : selectedTheme[@"id"];
+    for (NSDictionary *theme in themes) {
+        [libraryItems addObject:@{
+            @"id": theme[@"id"] ?: @"",
+            @"title": theme[@"name"] ?: @"Imported Theme",
+            @"sourceType": theme[@"sourceType"] ?: @"folder",
+            @"theme": theme,
+            @"importedAt": theme[@"importedAt"] ?: @"",
+            @"iconCount": theme[@"iconCount"] ?: @0,
+            @"iconBundlesCount": theme[@"iconBundlesCount"] ?: @0,
+            @"aliasMappedCount": theme[@"aliasMappedCount"] ?: @0,
+            @"skippedCount": theme[@"skippedCount"] ?: @0,
+            @"duplicateCount": theme[@"duplicateCount"] ?: @0,
+            @"skippedSamples": theme[@"skippedSamples"] ?: @[],
+            @"builtIn": @NO,
+            @"selected": @([selectedID isEqualToString:theme[@"id"]]),
+        }];
+    }
+
+    return @[
+        @{ @"kind": @"sbl-online-entry",
+           @"title": @"Online Themes",
+           @"subtitle": @"Preview and download curated themes.",
+           @"action": @"sbl-online" },
+        @{ @"kind": @"sbl-carousel",
+           @"title": @"Theme Library",
+           @"subtitle": themes.count > 0
+                ? @"Tap a card to activate. Long-press a card for options."
+                : @"Start with iOS 6 or import a SnowBoard IconBundles theme.",
+           @"items": libraryItems },
+        @{ @"kind": @"sbl-help",
+           @"title": @"Import & Help",
+           @"subtitle": @"Import a named local folder/.zip/.deb, paste a direct archive URL, or open the format guide.",
+           @"active": @(hasActiveTheme) },
+    ];
+}
+
 + (NSArray<NSDictionary<NSString *, NSString *> *> *)settingsSummaryForSection:(NSInteger)section
 {
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
@@ -7777,6 +7964,8 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         [out addObject:@{@"title": @"Multi-watch switch", @"value": [@([d integerForKey:kSettingsNanoMinQuickSwitch])   stringValue]}];
     } else if (section == SectionThemer) {
         [out addObject:@{@"title": @"Theme", @"value": settings_themer_selected_theme_display_name()}];
+    } else if (section == SectionSnowBoardLite) {
+        [out addObject:@{@"title": @"Theme", @"value": settings_snowboardlite_selected_theme_display_name()}];
     } else if (section == SectionLiveWP) {
         NSString *absPath = settings_livewp_absolute_path();
         NSString *videoName = (absPath && absPath.length > 0) ? [absPath lastPathComponent] : @"None";
@@ -7795,6 +7984,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         case SectionOTA:       return self.otaRows;
         case SectionNanoRegistry: return self.nanoRegistryRows;
         case SectionThemer:  return self.themerRows;
+        case SectionSnowBoardLite: return self.snowBoardLiteRows;
         case SectionPowercuff: return self.powercuffRows;
         case SectionStatBar:   return self.statbarRows;
         case SectionNSBar:     return self.nsbarRows;
@@ -7825,6 +8015,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         @{ @"title": @"Axon Lite",          @"icon": @"bell.badge.fill",                     @"color": [UIColor systemRedColor],    @"section": @(SectionAxonLite) },
         @{ @"title": @"TypeBanner",         @"icon": @"ellipsis.bubble.fill",                @"color": [UIColor systemTealColor],   @"section": @(SectionTypeBanner), @"experimental": @YES },
         @{ @"title": @"Cyanide Themer",     @"icon": @"paintpalette.fill",                   @"color": [UIColor systemPinkColor],   @"section": @(SectionThemer) },
+        @{ @"title": @"SnowBoard Lite",     @"icon": @"square.stack.3d.up.fill",             @"color": [UIColor systemMintColor],   @"section": @(SectionSnowBoardLite) },
         @{ @"title": @"LiveWP",             @"icon": @"play.rectangle.fill",                 @"color": [UIColor systemPurpleColor], @"section": @(SectionLiveWP) },
         @{ @"title": @"Powercuff",          @"icon": @"bolt.slash.fill",                     @"color": [UIColor systemOrangeColor], @"section": @(SectionPowercuff) },
         @{ @"title": @"SpringBoard Tweaks", @"icon": @"apps.iphone",                         @"color": [UIColor systemIndigoColor], @"section": @(SectionDarkSwordTweaks) },
@@ -7990,6 +8181,9 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         return @"Note: Cyanide Themer is still rough around the edges and may be glitchy. It will be iteratively improved to be more stable over time.\n\n"
                @"Pick a theme before running Cyanide Themer.\n\n"
                @"Custom themes can be a folder of PNG files named by bundle ID, such as com.apple.mobilesafari.png, or a binary plist mapping bundle IDs to PNG data. Import copies the theme into Cyanide's Documents/Themes folder. Theme Format Guide includes examples and plist exports.";
+    }
+    if (s == SectionSnowBoardLite) {
+        return @"SnowBoard Lite is separate from Cyanide Themer. Use the bundled iOS 6 Theme, import a named local folder/.zip/.deb, or paste a named direct archive URL. Cyanide recursively scans IconBundles, stores a local copy, and lets you switch active themes from this page.\n\nArchive support is intentionally lightweight: .zip supports stored/deflated entries, and .deb supports data.tar/data.tar.gz/data.tar.xz payloads.";
     }
     if (s == SectionLiveWP) {
         return @"Play a video as your dynamic wallpaper on both lock screen and home screen. Select a video file from your device, then toggle Enable and hit Apply Tweaks. The video will loop continuously as your wallpaper.";
@@ -8238,6 +8432,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
 
 - (void)presentThemerImporter
 {
+    self.pendingThemeImportMode = @"themer";
     UIAlertController *hint = [UIAlertController
         alertControllerWithTitle:@"Import Theme Folder"
                          message:@"Navigate into your theme folder so you can see the PNG files inside, then tap Open in the top-right corner to import the folder."
@@ -8252,6 +8447,531 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     }]];
     [hint addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
     [self presentViewController:hint animated:YES completion:nil];
+}
+
+- (void)reloadSnowBoardLiteSectionAndQueue
+{
+    settings_mark_tweak_applied(kSettingsSnowBoardLiteEnabled, NO);
+    settings_notify_package_queue_changed_async();
+    if (self.detailMode && self.underlyingSection == SectionSnowBoardLite) {
+        [self.tableView reloadSections:[NSIndexSet indexSetWithIndex:0]
+                      withRowAnimation:UITableViewRowAnimationAutomatic];
+    } else {
+        [self.tableView reloadData];
+    }
+}
+
+- (void)presentSnowBoardLiteImporter
+{
+    UIAlertController *namePrompt = [UIAlertController
+        alertControllerWithTitle:@"Name Theme"
+                         message:@"Give this SnowBoard Lite theme a display name, then choose a folder, .zip, or .deb containing IconBundles."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [namePrompt addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"Theme name";
+        field.autocapitalizationType = UITextAutocapitalizationTypeWords;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [namePrompt addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                                   style:UIAlertActionStyleCancel
+                                                 handler:nil]];
+    [namePrompt addAction:[UIAlertAction actionWithTitle:@"Choose File"
+                                                   style:UIAlertActionStyleDefault
+                                                 handler:^(UIAlertAction *a) {
+        (void)a;
+        NSString *name = namePrompt.textFields.firstObject.text ?: @"";
+        self.pendingSnowBoardLiteImportName =
+            [name stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        self.pendingThemeImportMode = @"sbl";
+        UTType *zipType = [UTType typeWithFilenameExtension:@"zip"];
+        UTType *debType = [UTType typeWithFilenameExtension:@"deb"];
+        NSMutableArray<UTType *> *types = [NSMutableArray arrayWithObject:UTTypeFolder];
+        if (zipType) [types addObject:zipType];
+        if (debType) [types addObject:debType];
+        UIDocumentPickerViewController *picker =
+            [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types];
+        picker.delegate = self;
+        picker.allowsMultipleSelection = NO;
+        [self presentViewController:picker animated:YES completion:nil];
+    }]];
+    [self presentViewController:namePrompt animated:YES completion:nil];
+}
+
+- (void)presentSnowBoardLiteFormatGuide
+{
+    UIAlertController *guide = [UIAlertController
+        alertControllerWithTitle:@"SnowBoard Lite Format"
+                         message:@"Supported inputs: the bundled iOS 6 Theme, a local folder, a local .zip/.deb, or a direct .zip/.deb URL containing one or more IconBundles folders.\n\nOnly PNG files inside IconBundles are imported. Bundle-ID names work best, for example com.apple.mobilesafari.png or com.apple.MobileSMS-large@3x.png. Lite also maps common SnowBoard aliases such as Alipay, Taobao, Amap, AppStore, Settings, Messages, and Safari.\n\nNot supported in Lite: masks, overlays, Bundles resources, badges, dock/folder assets, UIImages, alternate icon hooks, ZIP64/encrypted ZIP, or data.tar.zst."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [guide addAction:[UIAlertAction actionWithTitle:@"OK"
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [self presentViewController:guide animated:YES completion:nil];
+}
+
+- (void)selectSnowBoardLiteBuiltinIOS6Theme
+{
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    [d setObject:kSnowBoardLiteThemeBuiltinIOS6
+          forKey:kSettingsSnowBoardLiteSelectedThemeID];
+    [d synchronize];
+    log_user("[SBL] Selected bundled iOS 6 Theme.\n");
+    [self reloadSnowBoardLiteSectionAndQueue];
+}
+
+- (void)selectSnowBoardLiteThemeID:(NSString *)themeID
+{
+    if (themeID.length == 0) return;
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    [d setObject:themeID forKey:kSettingsSnowBoardLiteSelectedThemeID];
+    [d synchronize];
+    log_user("[SBL] Selected theme: %s.\n",
+             settings_snowboardlite_selected_theme_display_name().UTF8String);
+    [self reloadSnowBoardLiteSectionAndQueue];
+}
+
+- (void)snowBoardLiteCarouselThemeTapped:(UIControl *)sender
+{
+    NSString *themeID = objc_getAssociatedObject(sender, "sblThemeID");
+    if ([themeID isEqualToString:kSnowBoardLiteThemeBuiltinIOS6]) {
+        [self selectSnowBoardLiteBuiltinIOS6Theme];
+    } else {
+        [self selectSnowBoardLiteThemeID:themeID];
+    }
+}
+
+- (NSDictionary *)installedSnowBoardLiteOnlineThemeForItem:(NSDictionary *)item
+{
+    NSString *url = [item[@"url"] isKindOfClass:NSString.class] ? item[@"url"] : @"";
+    NSString *title = [item[@"title"] isKindOfClass:NSString.class] ? item[@"title"] : @"";
+    for (NSDictionary *theme in settings_sbl_load_manifest()) {
+        NSString *sourceURL = [theme[@"sourceURL"] isKindOfClass:NSString.class] ? theme[@"sourceURL"] : @"";
+        if (url.length > 0 && [sourceURL caseInsensitiveCompare:url] == NSOrderedSame) {
+            return theme;
+        }
+
+        NSString *name = [theme[@"name"] isKindOfClass:NSString.class] ? theme[@"name"] : @"";
+        NSString *sourceName = [theme[@"sourceName"] isKindOfClass:NSString.class] ? theme[@"sourceName"] : @"";
+        if (title.length > 0 &&
+            ([name caseInsensitiveCompare:title] == NSOrderedSame ||
+             [sourceName caseInsensitiveCompare:title] == NSOrderedSame)) {
+            return theme;
+        }
+    }
+    return nil;
+}
+
+- (void)snowBoardLiteOnlineDownloadTapped:(UIControl *)sender
+{
+    NSString *url = objc_getAssociatedObject(sender, "sblOnlineURL");
+    NSString *name = objc_getAssociatedObject(sender, "sblOnlineName");
+    NSString *installedThemeID = objc_getAssociatedObject(sender, "sblOnlineInstalledThemeID");
+    if (installedThemeID.length > 0) {
+        [self selectSnowBoardLiteThemeID:installedThemeID];
+        [self.presentedViewController dismissViewControllerAnimated:YES completion:nil];
+        return;
+    }
+
+    NSDictionary *installedTheme = [self installedSnowBoardLiteOnlineThemeForItem:@{
+        @"url": url ?: @"",
+        @"title": name ?: @"",
+    }];
+    NSString *liveInstalledThemeID = installedTheme[@"id"];
+    if (liveInstalledThemeID.length > 0) {
+        [self selectSnowBoardLiteThemeID:liveInstalledThemeID];
+        [self.presentedViewController dismissViewControllerAnimated:YES completion:nil];
+        return;
+    }
+
+    if (url.length == 0) return;
+    [self startSnowBoardLiteThemeDownloadFromString:url
+                                        displayName:(name.length ? name : @"Online Theme")];
+}
+
+- (void)presentSnowBoardLiteOnlineDownloads
+{
+    UIViewController *sheet = [[UIViewController alloc] init];
+    sheet.view.backgroundColor = UIColor.systemGroupedBackgroundColor;
+    sheet.modalPresentationStyle = UIModalPresentationPageSheet;
+    sheet.preferredContentSize = CGSizeMake(420.0, 680.0);
+    if (@available(iOS 15.0, *)) {
+        UISheetPresentationController *presentation = sheet.sheetPresentationController;
+        presentation.detents = @[
+            UISheetPresentationControllerDetent.mediumDetent,
+            UISheetPresentationControllerDetent.largeDetent,
+        ];
+        presentation.prefersGrabberVisible = YES;
+        presentation.preferredCornerRadius = 26.0;
+    }
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = @"Online Downloads";
+    title.textColor = UIColor.labelColor;
+    title.font = [UIFont systemFontOfSize:28.0 weight:UIFontWeightBlack];
+    [sheet.view addSubview:title];
+
+    UILabel *subtitle = [[UILabel alloc] init];
+    subtitle.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitle.text = @"Preview curated SnowBoard themes before downloading.";
+    subtitle.textColor = UIColor.secondaryLabelColor;
+    subtitle.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
+    subtitle.numberOfLines = 2;
+    [sheet.view addSubview:subtitle];
+
+    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+    close.translatesAutoresizingMaskIntoConstraints = NO;
+    close.tintColor = UIColor.secondaryLabelColor;
+    close.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    close.layer.cornerRadius = 17.0;
+    close.layer.cornerCurve = kCACornerCurveContinuous;
+    [close setImage:[UIImage systemImageNamed:@"xmark"] forState:UIControlStateNormal];
+    __weak UIViewController *weakSheet = sheet;
+    [close addAction:[UIAction actionWithHandler:^(__kindof UIAction *action) {
+        (void)action;
+        [weakSheet dismissViewControllerAnimated:YES completion:nil];
+    }] forControlEvents:UIControlEventTouchUpInside];
+    [sheet.view addSubview:close];
+
+    UIScrollView *scroll = [[UIScrollView alloc] init];
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    scroll.alwaysBounceVertical = YES;
+    scroll.showsVerticalScrollIndicator = YES;
+    [sheet.view addSubview:scroll];
+
+    UIStackView *stack = [[UIStackView alloc] init];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 12.0;
+    [scroll addSubview:stack];
+
+    for (NSDictionary *item in [self snowBoardLiteOnlineDownloadItems]) {
+        [stack addArrangedSubview:[self snowBoardLiteOnlineDownloadCardForItem:item]];
+    }
+
+    UILayoutGuide *safe = sheet.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [title.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor constant:20.0],
+        [title.trailingAnchor constraintLessThanOrEqualToAnchor:close.leadingAnchor constant:-12.0],
+        [title.topAnchor constraintEqualToAnchor:safe.topAnchor constant:18.0],
+
+        [close.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-18.0],
+        [close.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [close.widthAnchor constraintEqualToConstant:34.0],
+        [close.heightAnchor constraintEqualToConstant:34.0],
+
+        [subtitle.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [subtitle.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor constant:-20.0],
+        [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:4.0],
+
+        [scroll.leadingAnchor constraintEqualToAnchor:safe.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:safe.trailingAnchor],
+        [scroll.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:14.0],
+        [scroll.bottomAnchor constraintEqualToAnchor:sheet.view.bottomAnchor],
+
+        [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:14.0],
+        [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-14.0],
+        [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:4.0],
+        [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-22.0],
+        [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-28.0],
+    ]];
+
+    [self presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)presentSnowBoardLiteRemoveConfirmationForThemeID:(NSString *)themeID
+                                                   title:(NSString *)title
+{
+    if (themeID.length == 0 ||
+        [themeID isEqualToString:kSnowBoardLiteThemeBuiltinIOS6]) {
+        return;
+    }
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Remove Theme?"
+                         message:[NSString stringWithFormat:@"Remove \"%@\" from the SnowBoard Lite library?", title.length ? title : @"Imported Theme"]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Remove"
+                                              style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *a) {
+        (void)a;
+        [self removeSnowBoardLiteThemeID:themeID];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)renameSnowBoardLiteThemeID:(NSString *)themeID toName:(NSString *)name
+{
+    NSString *trimmed = [name stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (themeID.length == 0 || trimmed.length == 0) return;
+
+    NSArray<NSDictionary *> *themes = settings_sbl_load_manifest();
+    NSMutableArray<NSDictionary *> *next = [NSMutableArray arrayWithCapacity:themes.count];
+    BOOL renamed = NO;
+    for (NSDictionary *theme in themes) {
+        if ([theme[@"id"] isEqualToString:themeID]) {
+            NSMutableDictionary *copy = [theme mutableCopy];
+            copy[@"name"] = trimmed;
+            [next addObject:copy];
+            renamed = YES;
+        } else {
+            [next addObject:theme];
+        }
+    }
+    if (!renamed) return;
+    if (!settings_sbl_save_manifest(next)) {
+        log_user("[SBL] Failed to rename imported theme.\n");
+        return;
+    }
+
+    log_user("[SBL] Renamed theme to \"%s\".\n", trimmed.UTF8String);
+    [self reloadSnowBoardLiteSectionAndQueue];
+}
+
+- (void)presentSnowBoardLiteRenamePromptForThemeID:(NSString *)themeID
+                                             title:(NSString *)title
+{
+    if (themeID.length == 0 ||
+        [themeID isEqualToString:kSnowBoardLiteThemeBuiltinIOS6]) {
+        return;
+    }
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Rename Theme"
+                         message:@"Set the display name shown in SnowBoard Lite."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.text = title ?: @"";
+        field.placeholder = @"Theme name";
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+        field.autocapitalizationType = UITextAutocapitalizationTypeWords;
+    }];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Rename"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *a) {
+        (void)a;
+        [self renameSnowBoardLiteThemeID:themeID
+                                  toName:alert.textFields.firstObject.text ?: @""];
+    }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)presentSnowBoardLiteThemeInfo:(NSDictionary *)item
+{
+    NSString *title = item[@"title"] ?: @"Theme";
+    BOOL builtIn = [item[@"builtIn"] boolValue];
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    [lines addObject:[NSString stringWithFormat:@"Source: %@",
+                      [self snowBoardLiteSourceBadgeText:item[@"sourceType"]]]];
+    [lines addObject:[NSString stringWithFormat:@"Icons: %@", item[@"iconCount"] ?: @0]];
+    if (!builtIn) {
+        NSString *importedAt = item[@"importedAt"] ?: @"";
+        if (importedAt.length > 0) {
+            [lines addObject:[NSString stringWithFormat:@"Imported: %@", importedAt]];
+        }
+        [lines addObject:[NSString stringWithFormat:@"IconBundles: %@", item[@"iconBundlesCount"] ?: @0]];
+        [lines addObject:[NSString stringWithFormat:@"Aliases: %@", item[@"aliasMappedCount"] ?: @0]];
+        [lines addObject:[NSString stringWithFormat:@"Skipped: %@", item[@"skippedCount"] ?: @0]];
+        [lines addObject:[NSString stringWithFormat:@"Duplicates: %@", item[@"duplicateCount"] ?: @0]];
+        NSArray *samples = [item[@"skippedSamples"] isKindOfClass:NSArray.class]
+            ? item[@"skippedSamples"] : @[];
+        if (samples.count > 0) {
+            NSUInteger count = MIN(samples.count, 4);
+            [lines addObject:[NSString stringWithFormat:@"Skipped sample: %@",
+                              [[samples subarrayWithRange:NSMakeRange(0, count)]
+                               componentsJoinedByString:@", "]]];
+        }
+    } else {
+        [lines addObject:@"Built into Cyanide; cannot be renamed or removed."];
+    }
+
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:title
+                         message:[lines componentsJoinedByString:@"\n"]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                                              style:UIAlertActionStyleDefault
+                                            handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (UIContextMenuConfiguration *)contextMenuInteraction:(UIContextMenuInteraction *)interaction
+                      configurationForMenuAtLocation:(CGPoint)location
+{
+    (void)location;
+    NSDictionary *item = objc_getAssociatedObject(interaction.view, "sblThemeItem");
+    if (![item isKindOfClass:NSDictionary.class]) return nil;
+
+    NSString *themeID = item[@"id"] ?: @"";
+    NSString *title = item[@"title"] ?: @"Theme";
+    BOOL builtIn = [item[@"builtIn"] boolValue];
+
+    return [UIContextMenuConfiguration
+        configurationWithIdentifier:nil
+                     previewProvider:nil
+                      actionProvider:^UIMenu *(NSArray<UIMenuElement *> *suggestedActions) {
+        (void)suggestedActions;
+
+        UIAction *activate = [UIAction actionWithTitle:@"Set Active"
+                                                 image:[UIImage systemImageNamed:@"checkmark.circle.fill"]
+                                            identifier:nil
+                                               handler:^(__kindof UIAction *action) {
+            (void)action;
+            if ([themeID isEqualToString:kSnowBoardLiteThemeBuiltinIOS6]) {
+                [self selectSnowBoardLiteBuiltinIOS6Theme];
+            } else {
+                [self selectSnowBoardLiteThemeID:themeID];
+            }
+        }];
+
+        UIAction *info = [UIAction actionWithTitle:@"Show Info"
+                                             image:[UIImage systemImageNamed:@"info.circle"]
+                                        identifier:nil
+                                           handler:^(__kindof UIAction *action) {
+            (void)action;
+            [self presentSnowBoardLiteThemeInfo:item];
+        }];
+
+        if (builtIn) {
+            return [UIMenu menuWithTitle:title children:@[activate, info]];
+        }
+
+        UIAction *rename = [UIAction actionWithTitle:@"Rename"
+                                               image:[UIImage systemImageNamed:@"pencil"]
+                                          identifier:nil
+                                             handler:^(__kindof UIAction *action) {
+            (void)action;
+            [self presentSnowBoardLiteRenamePromptForThemeID:themeID title:title];
+        }];
+
+        UIAction *remove = [UIAction actionWithTitle:@"Delete"
+                                               image:[UIImage systemImageNamed:@"trash"]
+                                          identifier:nil
+                                             handler:^(__kindof UIAction *action) {
+            (void)action;
+            [self presentSnowBoardLiteRemoveConfirmationForThemeID:themeID title:title];
+        }];
+        remove.attributes = UIMenuElementAttributesDestructive;
+
+        return [UIMenu menuWithTitle:title children:@[activate, rename, info, remove]];
+    }];
+}
+
+- (void)snowBoardLiteToolButtonTapped:(UIButton *)sender
+{
+    NSString *action = objc_getAssociatedObject(sender, "sblAction");
+    if ([action isEqualToString:@"sbl-import"]) {
+        [self presentSnowBoardLiteImporter];
+    } else if ([action isEqualToString:@"sbl-import-url"]) {
+        [self promptSnowBoardLiteThemeURL];
+    } else if ([action isEqualToString:@"sbl-online"]) {
+        [self presentSnowBoardLiteOnlineDownloads];
+    } else if ([action isEqualToString:@"sbl-guide"]) {
+        [self presentSnowBoardLiteFormatGuide];
+    }
+}
+
+- (void)scrollToSnowBoardLiteOnlineDownloads
+{
+    NSArray<NSDictionary *> *rows = [self rowsForSection:SectionSnowBoardLite];
+    NSInteger targetRow = NSNotFound;
+    for (NSInteger i = 0; i < (NSInteger)rows.count; i++) {
+        if ([rows[i][@"kind"] isEqualToString:@"sbl-online"]) {
+            targetRow = i;
+            break;
+        }
+    }
+    if (targetRow == NSNotFound) return;
+
+    NSInteger tableSection = (self.detailMode && self.underlyingSection == SectionSnowBoardLite)
+        ? 0
+        : SectionSnowBoardLite;
+    if (tableSection >= [self.tableView numberOfSections] ||
+        targetRow >= [self.tableView numberOfRowsInSection:tableSection]) {
+        return;
+    }
+
+    NSIndexPath *path = [NSIndexPath indexPathForRow:targetRow inSection:tableSection];
+    [self.tableView scrollToRowAtIndexPath:path
+                          atScrollPosition:UITableViewScrollPositionTop
+                                  animated:YES];
+}
+
+- (void)clearSnowBoardLiteSelectedTheme
+{
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    [d setObject:@"" forKey:kSettingsSnowBoardLiteSelectedThemeID];
+    if ([d boolForKey:kSettingsSnowBoardLiteEnabled]) {
+        [d setBool:NO forKey:kSettingsSnowBoardLiteEnabled];
+        g_themer_live_stop_requested = 1;
+    }
+    [d synchronize];
+    log_user("[SBL] Cleared active theme; SnowBoard Lite is no longer queued.\n");
+    [self reloadSnowBoardLiteSectionAndQueue];
+}
+
+- (void)removeSnowBoardLiteThemeID:(NSString *)themeID
+{
+    if (themeID.length == 0) return;
+    NSArray<NSDictionary *> *themes = settings_sbl_load_manifest();
+    NSMutableArray<NSDictionary *> *next = [NSMutableArray array];
+    NSDictionary *removed = nil;
+    for (NSDictionary *theme in themes) {
+        if ([theme[@"id"] isEqualToString:themeID]) {
+            removed = theme;
+        } else {
+            [next addObject:theme];
+        }
+    }
+    if (!removed) return;
+
+    NSString *path = removed[@"path"];
+    if (path.length > 0) {
+        [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+    }
+    settings_sbl_save_manifest(next);
+
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    if ([[d stringForKey:kSettingsSnowBoardLiteSelectedThemeID] isEqualToString:themeID]) {
+        [d setObject:@"" forKey:kSettingsSnowBoardLiteSelectedThemeID];
+        if ([d boolForKey:kSettingsSnowBoardLiteEnabled]) {
+            [d setBool:NO forKey:kSettingsSnowBoardLiteEnabled];
+            g_themer_live_stop_requested = 1;
+        }
+        [d synchronize];
+    }
+    log_user("[SBL] Removed imported theme: %s.\n",
+             [removed[@"name"] UTF8String] ?: "unknown");
+    [self reloadSnowBoardLiteSectionAndQueue];
+}
+
+- (void)presentSnowBoardLiteRemoveThemePicker
+{
+    NSArray<NSDictionary *> *themes = settings_sbl_load_manifest();
+    if (themes.count == 0) return;
+
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"Remove Theme"
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSDictionary *theme in themes) {
+        NSString *themeID = theme[@"id"];
+        NSString *name = theme[@"name"] ?: @"Imported Theme";
+        [sheet addAction:[UIAlertAction actionWithTitle:name
+                                                  style:UIAlertActionStyleDestructive
+                                                handler:^(UIAlertAction *_) {
+            [self removeSnowBoardLiteThemeID:themeID];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    sheet.popoverPresentationController.sourceView = self.tableView;
+    sheet.popoverPresentationController.sourceRect = self.tableView.bounds;
+    [self presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)livewpPreviewToggle:(UIButton *)btn
@@ -8308,7 +9028,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         [UTType typeWithFilenameExtension:@"mov"],
         [UTType typeWithFilenameExtension:@"m4v"]
     ];
-    
+
     UIDocumentPickerViewController *picker =
         [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:videoTypes
                                                                     asCopy:YES];
@@ -8700,17 +9420,297 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     }];
 }
 
+- (void)promptSnowBoardLiteThemeURL
+{
+    UIAlertController *ac =
+        [UIAlertController alertControllerWithTitle:@"Download Theme"
+                                            message:@"Name this theme and paste a direct .zip or .deb URL that contains IconBundles."
+                                     preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.placeholder = @"Theme name";
+        textField.autocapitalizationType = UITextAutocapitalizationTypeWords;
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+        textField.placeholder = @"https://example.com/theme.zip";
+        textField.keyboardType = UIKeyboardTypeURL;
+        textField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+        textField.autocorrectionType = UITextAutocorrectionTypeNo;
+        textField.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                           style:UIAlertActionStyleCancel
+                                         handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Download"
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(__unused UIAlertAction *action) {
+        NSString *name = ac.textFields.firstObject.text ?: @"";
+        NSString *raw = ac.textFields.count > 1 ? (ac.textFields[1].text ?: @"") : @"";
+        [self startSnowBoardLiteThemeDownloadFromString:raw displayName:name];
+    }]];
+    [self presentViewController:ac animated:YES completion:nil];
+}
+
+- (void)startSnowBoardLiteThemeDownloadFromString:(NSString *)rawURL
+{
+    [self startSnowBoardLiteThemeDownloadFromString:rawURL displayName:nil];
+}
+
+- (void)startSnowBoardLiteThemeDownloadFromString:(NSString *)rawURL displayName:(NSString *)displayName
+{
+    NSString *trimmed = [rawURL stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *trimmedName = [displayName stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSURL *url = [NSURL URLWithString:trimmed];
+    if (!url || !([url.scheme.lowercaseString isEqualToString:@"https"] ||
+                  [url.scheme.lowercaseString isEqualToString:@"http"])) {
+        UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Invalid URL"
+                                                                     message:@"Enter a valid http or https theme archive URL."
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+        [err addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                style:UIAlertActionStyleDefault
+                                              handler:nil]];
+        [self presentViewController:err animated:YES completion:nil];
+        return;
+    }
+
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    [self startSnowBoardLiteThemeDownloadWithRequest:request displayName:trimmedName];
+}
+
+- (NSMutableURLRequest *)normalizedSnowBoardLiteDownloadRequest:(NSURLRequest *)request
+{
+    NSMutableURLRequest *native = [request mutableCopy];
+    if (!native) return nil;
+    native.HTTPMethod = @"GET";
+    native.HTTPBody = nil;
+    native.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    native.timeoutInterval = 30.0;
+    if (![native valueForHTTPHeaderField:@"User-Agent"]) {
+        [native setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+      forHTTPHeaderField:@"User-Agent"];
+    }
+    if (![native valueForHTTPHeaderField:@"Accept"]) {
+        [native setValue:@"application/zip,application/vnd.debian.binary-package,application/x-debian-package,application/octet-stream,*/*;q=0.8"
+      forHTTPHeaderField:@"Accept"];
+    }
+    if (![native valueForHTTPHeaderField:@"Accept-Language"]) {
+        [native setValue:[NSLocale preferredLanguages].firstObject ?: @"en-US"
+      forHTTPHeaderField:@"Accept-Language"];
+    }
+    return native;
+}
+
+- (void)startSnowBoardLiteThemeDownloadWithRequest:(NSURLRequest *)request
+{
+    [self startSnowBoardLiteThemeDownloadWithRequest:request displayName:nil];
+}
+
+- (void)startSnowBoardLiteThemeDownloadWithRequest:(NSURLRequest *)request displayName:(NSString *)displayName
+{
+    NSMutableURLRequest *nativeRequest = [self normalizedSnowBoardLiteDownloadRequest:request];
+    NSURL *url = nativeRequest.URL;
+    if (!url || !([url.scheme.lowercaseString isEqualToString:@"https"] ||
+                  [url.scheme.lowercaseString isEqualToString:@"http"])) {
+        return;
+    }
+    if (self.sblDownloadTask) {
+        UIAlertController *err = [UIAlertController alertControllerWithTitle:@"Download Already Running"
+                                                                     message:@"Cancel the current SnowBoard Lite download before starting another one."
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+        [err addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                style:UIAlertActionStyleDefault
+                                              handler:nil]];
+        [[self livewpPresentationHost] presentViewController:err animated:YES completion:nil];
+        return;
+    }
+
+    self.sblDownloadDisplayName = displayName;
+    self.sblDownloadURL = url;
+    self.sblDownloadRequest = nativeRequest;
+    CyanideLiveWPDownloadProgressViewController *progress = [[CyanideLiveWPDownloadProgressViewController alloc] init];
+    progress.titleText = @"Downloading Theme";
+    progress.savingStatusText = @"Downloading SnowBoard Lite theme";
+    progress.iconSymbolName = @"archivebox.fill";
+    progress.accentColor = UIColor.systemMintColor;
+    progress.modalPresentationStyle = UIModalPresentationOverFullScreen;
+    progress.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+    __weak typeof(self) weakSelf = self;
+    progress.cancelHandler = ^{
+        [weakSelf cancelSnowBoardLiteThemeDownload];
+    };
+    self.sblDownloadProgressController = progress;
+
+    NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    cfg.timeoutIntervalForRequest = 30.0;
+    cfg.timeoutIntervalForResource = 600.0;
+    self.sblDownloadSession = [NSURLSession sessionWithConfiguration:cfg delegate:self delegateQueue:nil];
+    self.sblDownloadTask = [self.sblDownloadSession downloadTaskWithRequest:nativeRequest];
+
+    [[self livewpPresentationHost] presentViewController:progress animated:YES completion:^{
+        [progress updateWithReceivedBytes:0 expectedBytes:0 host:url.host];
+        [self.sblDownloadTask resume];
+        log_user("[SBL] Theme download started: %s\n", url.absoluteString.UTF8String);
+    }];
+}
+
+- (void)cancelSnowBoardLiteThemeDownload
+{
+    [self.sblDownloadTask cancel];
+    [self.sblDownloadSession invalidateAndCancel];
+    CyanideLiveWPDownloadProgressViewController *progress = self.sblDownloadProgressController;
+    self.sblDownloadTask = nil;
+    self.sblDownloadSession = nil;
+    self.sblDownloadProgressController = nil;
+    self.sblDownloadURL = nil;
+    self.sblDownloadRequest = nil;
+    self.sblDownloadDisplayName = nil;
+    [self dismissLiveWPDownloadProgressController:progress completion:nil];
+    log_user("[SBL] Theme download cancelled\n");
+}
+
+- (NSString *)sblSafeDownloadedThemeNameFromURL:(NSURL *)url response:(NSURLResponse *)response
+{
+    NSString *name = response.suggestedFilename.length ? response.suggestedFilename : url.lastPathComponent;
+    if (!name.length) {
+        NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
+        fmt.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        fmt.dateFormat = @"yyyyMMdd-HHmmss";
+        name = [NSString stringWithFormat:@"SnowBoardLite-%@.zip", [fmt stringFromDate:[NSDate date]]];
+    }
+
+    NSCharacterSet *bad = [NSCharacterSet characterSetWithCharactersInString:@"/\\:?%*|\"<>"];
+    NSArray<NSString *> *parts = [name componentsSeparatedByCharactersInSet:bad];
+    name = [[parts componentsJoinedByString:@"-"] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!name.length) name = @"SnowBoardLite-Theme.zip";
+    return name;
+}
+
+- (BOOL)importSnowBoardLiteArchiveAtURL:(NSURL *)url
+                            displayName:(NSString *)displayName
+                             sourceType:(NSString *)sourceType
+                                  error:(NSError **)error
+{
+    NSString *tmpName = [NSString stringWithFormat:@"sbl-download-extract-%llu",
+                         (unsigned long long)(NSDate.date.timeIntervalSince1970 * 1000.0)];
+    NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:tmpName];
+    BOOL ok = SBLExtractArchiveToDirectory(url, tmp, error);
+    if (ok) {
+        ok = settings_sbl_import_folder_theme_named([NSURL fileURLWithPath:tmp],
+                                                    displayName.length ? displayName : @"Downloaded Theme",
+                                                    sourceType.length ? sourceType : @"url",
+                                                    error);
+    }
+    [NSFileManager.defaultManager removeItemAtPath:tmp error:nil];
+    return ok;
+}
+
+- (BOOL)markSelectedSnowBoardLiteThemeWithSourceURLString:(NSString *)sourceURLString
+                                             onlineTitle:(NSString *)onlineTitle
+{
+    NSString *sourceURL = [sourceURLString stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (sourceURL.length == 0) return NO;
+
+    NSString *selectedID = [NSUserDefaults.standardUserDefaults
+        stringForKey:kSettingsSnowBoardLiteSelectedThemeID];
+    if (selectedID.length == 0) return NO;
+
+    NSArray<NSDictionary *> *themes = settings_sbl_load_manifest();
+    NSMutableArray<NSDictionary *> *next = [NSMutableArray arrayWithCapacity:themes.count];
+    BOOL changed = NO;
+    for (NSDictionary *theme in themes) {
+        if (!changed && [theme[@"id"] isEqualToString:selectedID]) {
+            NSMutableDictionary *updated = [theme mutableCopy];
+            updated[@"sourceURL"] = sourceURL;
+            if (onlineTitle.length > 0) {
+                updated[@"onlineTitle"] = onlineTitle;
+            }
+            [next addObject:updated];
+            changed = YES;
+        } else {
+            [next addObject:theme];
+        }
+    }
+    return changed ? settings_sbl_save_manifest(next) : NO;
+}
+
+- (void)finishSnowBoardLiteThemeDownloadWithErrorTitle:(NSString *)title message:(NSString *)message
+{
+    CyanideLiveWPDownloadProgressViewController *progress = self.sblDownloadProgressController;
+    self.sblDownloadTask = nil;
+    [self.sblDownloadSession finishTasksAndInvalidate];
+    self.sblDownloadSession = nil;
+    self.sblDownloadProgressController = nil;
+    self.sblDownloadURL = nil;
+    self.sblDownloadRequest = nil;
+    self.sblDownloadDisplayName = nil;
+
+    [self dismissLiveWPDownloadProgressController:progress completion:^{
+        UIAlertController *err = [UIAlertController alertControllerWithTitle:title
+                                                                     message:message
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+        [err addAction:[UIAlertAction actionWithTitle:@"OK"
+                                                style:UIAlertActionStyleDefault
+                                              handler:nil]];
+        [[self livewpPresentationHost] presentViewController:err animated:YES completion:nil];
+    }];
+}
+
+- (void)finishSuccessfulSnowBoardLiteThemeDownloadWithName:(NSString *)name
+{
+    CyanideLiveWPDownloadProgressViewController *progress = self.sblDownloadProgressController;
+    self.sblDownloadTask = nil;
+    [self.sblDownloadSession finishTasksAndInvalidate];
+    self.sblDownloadSession = nil;
+    self.sblDownloadProgressController = nil;
+    self.sblDownloadURL = nil;
+    self.sblDownloadRequest = nil;
+    self.sblDownloadDisplayName = nil;
+
+    [self dismissLiveWPDownloadProgressController:progress completion:^{
+        [self reloadSnowBoardLiteSectionAndQueue];
+        NSDictionary *theme = settings_sbl_selected_theme();
+        NSString *themeName = settings_snowboardlite_selected_theme_display_name();
+        NSNumber *iconCount = theme[@"iconCount"] ?: @0;
+        NSNumber *iconBundlesCount = theme[@"iconBundlesCount"] ?: @0;
+        NSNumber *skippedCount = theme[@"skippedCount"] ?: @0;
+        NSNumber *duplicateCount = theme[@"duplicateCount"] ?: @0;
+        NSString *sourceType = theme[@"sourceType"] ?: @"url";
+        NSString *msg = [NSString stringWithFormat:@"\"%@\" is now active.\n\nImported %@ icons from %@ IconBundles folder(s). Source: %@. Skipped %@ file(s), including %@ duplicate bundle ID(s).\n\nToggle SnowBoard Lite on and tap Apply Tweaks to use it.",
+                         themeName.length ? themeName : name,
+                         iconCount,
+                         iconBundlesCount,
+                         sourceType,
+                         skippedCount,
+                         duplicateCount];
+        UIAlertController *ok = [UIAlertController alertControllerWithTitle:@"Theme Imported"
+                                                                     message:msg
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+        [ok addAction:[UIAlertAction actionWithTitle:@"OK"
+                                               style:UIAlertActionStyleDefault
+                                             handler:nil]];
+        [[self livewpPresentationHost] presentViewController:ok animated:YES completion:nil];
+        log_user("[SBL] Theme download imported: %s\n", name.UTF8String ?: "theme");
+    }];
+}
+
 - (void)URLSession:(NSURLSession *)session
       downloadTask:(NSURLSessionDownloadTask *)downloadTask
       didWriteData:(int64_t)bytesWritten
  totalBytesWritten:(int64_t)totalBytesWritten
 totalBytesExpectedToWrite:(int64_t)totalBytesExpectedToWrite
 {
-    if (downloadTask != self.livewpDownloadTask) return;
+    if (downloadTask != self.livewpDownloadTask &&
+        downloadTask != self.sblDownloadTask) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self.livewpDownloadProgressController updateWithReceivedBytes:totalBytesWritten
-                                                         expectedBytes:totalBytesExpectedToWrite
-                                                                  host:self.livewpDownloadURL.host];
+        if (downloadTask == self.livewpDownloadTask) {
+            [self.livewpDownloadProgressController updateWithReceivedBytes:totalBytesWritten
+                                                             expectedBytes:totalBytesExpectedToWrite
+                                                                      host:self.livewpDownloadURL.host];
+        } else if (downloadTask == self.sblDownloadTask) {
+            [self.sblDownloadProgressController updateWithReceivedBytes:totalBytesWritten
+                                                           expectedBytes:totalBytesExpectedToWrite
+                                                                    host:self.sblDownloadURL.host];
+        }
     });
 }
 
@@ -8720,14 +9720,21 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
         newRequest:(NSURLRequest *)request
  completionHandler:(void (^)(NSURLRequest * _Nullable))completionHandler
 {
-    if (task != self.livewpDownloadTask) {
+    if (task != self.livewpDownloadTask &&
+        task != self.sblDownloadTask) {
         completionHandler(request);
         return;
     }
 
     NSMutableURLRequest *next = [request mutableCopy];
-    NSDictionary<NSString *, NSString *> *headers = self.livewpDownloadRequest.allHTTPHeaderFields;
-    NSString *oldHost = self.livewpDownloadURL.host.lowercaseString ?: @"";
+    NSURLRequest *originalRequest = (task == self.livewpDownloadTask)
+        ? self.livewpDownloadRequest
+        : self.sblDownloadRequest;
+    NSURL *originalURL = (task == self.livewpDownloadTask)
+        ? self.livewpDownloadURL
+        : self.sblDownloadURL;
+    NSDictionary<NSString *, NSString *> *headers = originalRequest.allHTTPHeaderFields;
+    NSString *oldHost = originalURL.host.lowercaseString ?: @"";
     NSString *newHost = next.URL.host.lowercaseString ?: @"";
     BOOL sameHost = oldHost.length && ([oldHost isEqualToString:newHost] ||
                                        [oldHost hasSuffix:[@"." stringByAppendingString:newHost]] ||
@@ -8738,10 +9745,11 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
             [next setValue:headers[key] forHTTPHeaderField:key];
         }
     }
-    if (![next valueForHTTPHeaderField:@"Referer"] && self.livewpDownloadURL.absoluteString.length) {
-        [next setValue:self.livewpDownloadURL.absoluteString forHTTPHeaderField:@"Referer"];
+    if (![next valueForHTTPHeaderField:@"Referer"] && originalURL.absoluteString.length) {
+        [next setValue:originalURL.absoluteString forHTTPHeaderField:@"Referer"];
     }
-    log_user("[LIVEWP] Download redirect %ld -> %s\n",
+    log_user("%s Download redirect %ld -> %s\n",
+             (task == self.livewpDownloadTask) ? "[LIVEWP]" : "[SBL]",
              (long)response.statusCode,
              next.URL.absoluteString.UTF8String ?: "(nil)");
     completionHandler(next);
@@ -8751,13 +9759,47 @@ willPerformHTTPRedirection:(NSHTTPURLResponse *)response
       downloadTask:(NSURLSessionDownloadTask *)downloadTask
 didFinishDownloadingToURL:(NSURL *)location
 {
-    if (downloadTask != self.livewpDownloadTask) return;
+    if (downloadTask != self.livewpDownloadTask &&
+        downloadTask != self.sblDownloadTask) return;
 
     NSHTTPURLResponse *http = [downloadTask.response isKindOfClass:NSHTTPURLResponse.class] ? (NSHTTPURLResponse *)downloadTask.response : nil;
     if (http && (http.statusCode < 200 || http.statusCode >= 300)) {
         NSString *msg = [NSString stringWithFormat:@"Server returned HTTP %ld.", (long)http.statusCode];
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self finishLiveWPVideoDownloadWithErrorTitle:@"Download Failed" message:msg];
+            if (downloadTask == self.livewpDownloadTask) {
+                [self finishLiveWPVideoDownloadWithErrorTitle:@"Download Failed" message:msg];
+            } else {
+                [self finishSnowBoardLiteThemeDownloadWithErrorTitle:@"Download Failed" message:msg];
+            }
+        });
+        return;
+    }
+
+    if (downloadTask == self.sblDownloadTask) {
+        NSURL *sourceURL = self.sblDownloadURL ?: downloadTask.originalRequest.URL;
+        NSString *fileName = [self sblSafeDownloadedThemeNameFromURL:sourceURL
+                                                            response:downloadTask.response];
+        NSString *manualName = self.sblDownloadDisplayName;
+        NSString *displayName = manualName.length ? manualName : fileName;
+        NSString *sourceType = fileName.pathExtension.lowercaseString.length
+            ? fileName.pathExtension.lowercaseString
+            : @"url";
+        NSError *importError = nil;
+        BOOL ok = [self importSnowBoardLiteArchiveAtURL:location
+                                            displayName:displayName
+                                            sourceType:sourceType
+                                                  error:&importError];
+        if (ok) {
+            [self markSelectedSnowBoardLiteThemeWithSourceURLString:sourceURL.absoluteString
+                                                        onlineTitle:displayName];
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!ok) {
+                [self finishSnowBoardLiteThemeDownloadWithErrorTitle:@"Import Failed"
+                                                             message:importError.localizedDescription ?: @"The downloaded theme could not be imported."];
+                return;
+            }
+            [self finishSuccessfulSnowBoardLiteThemeDownloadWithName:displayName];
         });
         return;
     }
@@ -8782,11 +9824,16 @@ didFinishDownloadingToURL:(NSURL *)location
 
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error
 {
-    if (task != self.livewpDownloadTask || !error) return;
+    if ((task != self.livewpDownloadTask && task != self.sblDownloadTask) || !error) return;
     if (error.code == NSURLErrorCancelled) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-        [self finishLiveWPVideoDownloadWithErrorTitle:@"Download Failed"
-                                              message:error.localizedDescription ?: @"The video could not be downloaded."];
+        if (task == self.livewpDownloadTask) {
+            [self finishLiveWPVideoDownloadWithErrorTitle:@"Download Failed"
+                                                  message:error.localizedDescription ?: @"The video could not be downloaded."];
+        } else {
+            [self finishSnowBoardLiteThemeDownloadWithErrorTitle:@"Download Failed"
+                                                         message:error.localizedDescription ?: @"The theme archive could not be downloaded."];
+        }
     });
 }
 
@@ -8941,10 +9988,15 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
     NSError *err = nil;
     BOOL isDir = NO;
     [[NSFileManager defaultManager] fileExistsAtPath:url.path isDirectory:&isDir];
+    NSString *themeImportMode = self.pendingThemeImportMode ?: @"";
+    self.pendingThemeImportMode = nil;
+    NSString *sblManualName = self.pendingSnowBoardLiteImportName ?: @"";
+    self.pendingSnowBoardLiteImportName = nil;
     
     // Check if this is a video file for LiveWP
     NSString *ext = url.pathExtension.lowercaseString;
-    if ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"]) {
+    if (themeImportMode.length == 0 &&
+        ([ext isEqualToString:@"mp4"] || [ext isEqualToString:@"mov"] || [ext isEqualToString:@"m4v"])) {
         // Handle LiveWP video selection
         BOOL ok = [self importLiveWPVideoAtURL:url error:&err];
         if (scoped) [url stopAccessingSecurityScopedResource];
@@ -8960,6 +10012,68 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         }
         
         [self finishLiveWPVideoImportAndSwapIfRunning];
+        return;
+    }
+
+    if ([themeImportMode isEqualToString:@"sbl"]) {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSError *sblErr = nil;
+            BOOL ok = NO;
+            NSString *displayName = sblManualName.length ? sblManualName : url.lastPathComponent;
+            if (displayName.length == 0) displayName = @"Imported Theme";
+            if (isDir) {
+                ok = settings_sbl_import_folder_theme_named(url,
+                                                            displayName,
+                                                            @"folder",
+                                                            &sblErr);
+            } else {
+                NSString *tmpName = [NSString stringWithFormat:@"sbl-extract-%llu",
+                                     (unsigned long long)(NSDate.date.timeIntervalSince1970 * 1000.0)];
+                NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:tmpName];
+                ok = SBLExtractArchiveToDirectory(url, tmp, &sblErr);
+                if (ok) {
+                    NSString *sourceType = url.pathExtension.lowercaseString ?: @"archive";
+                    ok = settings_sbl_import_folder_theme_named([NSURL fileURLWithPath:tmp],
+                                                               displayName,
+                                                               sourceType,
+                                                               &sblErr);
+                }
+                [NSFileManager.defaultManager removeItemAtPath:tmp error:nil];
+            }
+            if (scoped) [url stopAccessingSecurityScopedResource];
+
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (!ok) {
+                    NSString *msg = sblErr.localizedDescription ?: @"Choose a folder, .zip, or .deb that contains IconBundles.";
+                    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Import Failed"
+                                                                                 message:msg
+                                                                          preferredStyle:UIAlertControllerStyleAlert];
+                    [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                    [self presentViewController:ac animated:YES completion:nil];
+                    return;
+                }
+                [self reloadSnowBoardLiteSectionAndQueue];
+                NSDictionary *theme = settings_sbl_selected_theme();
+                NSString *name = settings_snowboardlite_selected_theme_display_name();
+                NSNumber *iconCount = theme[@"iconCount"] ?: @0;
+                NSNumber *iconBundlesCount = theme[@"iconBundlesCount"] ?: @0;
+                NSNumber *skippedCount = theme[@"skippedCount"] ?: @0;
+                NSNumber *duplicateCount = theme[@"duplicateCount"] ?: @0;
+                NSString *sourceType = theme[@"sourceType"] ?: @"theme";
+                UIAlertController *ac = [UIAlertController
+                    alertControllerWithTitle:@"Theme Imported"
+                                     message:[NSString stringWithFormat:@"\"%@\" is now active.\n\nImported %@ icons from %@ IconBundles folder(s). Source: %@. Skipped %@ file(s), including %@ duplicate bundle ID(s).\n\nToggle SnowBoard Lite on and tap Apply Tweaks to use it.",
+                                              name,
+                                              iconCount,
+                                              iconBundlesCount,
+                                              sourceType,
+                                              skippedCount,
+                                              duplicateCount]
+                              preferredStyle:UIAlertControllerStyleAlert];
+                [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                [self presentViewController:ac animated:YES completion:nil];
+            });
+        });
         return;
     }
     
@@ -8990,6 +10104,13 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
             [self presentViewController:ac animated:YES completion:nil];
         });
     });
+}
+
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController *)controller
+{
+    (void)controller;
+    self.pendingThemeImportMode = nil;
+    self.pendingSnowBoardLiteImportName = nil;
 }
 
 // "Classic" alternate icon is registered in Info.plist with CFBundleIconFiles
@@ -9219,6 +10340,16 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
                                                         object:[PackageQueue sharedQueue]];
 }
 
+static NSString *settings_current_diagnostic_log_text(NSString *path, NSString **outSource);
+static NSString *settings_diagnostic_log_with_header(NSString *rawLog,
+                                                     NSString *path,
+                                                     NSString *source,
+                                                     NSString *sessionId,
+                                                     NSString *kind,
+                                                     NSString *event,
+                                                     int seq);
+static NSURL *settings_write_snapshot_log_file(NSString *text);
+
 - (void)openTwitter
 {
     NSURL *url = [NSURL URLWithString:@"https://twitter.com/zeroxjf"];
@@ -9228,10 +10359,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 - (void)openViewLog
 {
     NSString *logPath = log_most_recent_session_path();
-    NSString *text;
-    if (!logPath) {
+    NSString *text = settings_current_diagnostic_log_text(logPath, NULL);
+    if (!text.length && !logPath.length) {
         text = @"No log yet. Run a chain at least once.";
-    } else {
+    } else if (!text.length) {
         NSError *err = nil;
         text = [NSString stringWithContentsOfFile:logPath encoding:NSUTF8StringEncoding error:&err];
         if (!text) text = [NSString stringWithFormat:@"Failed to read log: %@", err.localizedDescription];
@@ -9262,7 +10393,9 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
 - (void)openShareLog
 {
     NSString *logPath = log_most_recent_session_path();
-    if (!logPath.length) {
+    NSString *logSource = nil;
+    NSString *snapshot = settings_current_diagnostic_log_text(logPath, &logSource);
+    if (!snapshot.length) {
         UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"No Log Yet"
                                                                      message:@"Run a chain once, then come back to share the latest diagnostic log."
                                                               preferredStyle:UIAlertControllerStyleAlert];
@@ -9271,11 +10404,26 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         return;
     }
 
-    NSURL *logURL = [NSURL fileURLWithPath:logPath];
     NSString *appVersion = settings_app_version_string();
     NSString *iosVersion = [UIDevice currentDevice].systemVersion ?: @"unknown";
     struct utsname info; uname(&info);
     NSString *machine = [NSString stringWithUTF8String:info.machine] ?: @"unknown";
+    NSString *shareText = settings_diagnostic_log_with_header(snapshot,
+                                                              logPath,
+                                                              logSource,
+                                                              nil,
+                                                              @"share",
+                                                              nil,
+                                                              0);
+    NSURL *logURL = settings_write_snapshot_log_file(shareText);
+    if (!logURL) {
+        UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Share Failed"
+                                                                     message:@"Failed to prepare the diagnostic snapshot file."
+                                                              preferredStyle:UIAlertControllerStyleAlert];
+        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+        [self presentViewController:ac animated:YES completion:nil];
+        return;
+    }
     NSString *summary = [NSString stringWithFormat:@"Cyanide diagnostic log\nCyanide %@ · iOS %@ · %@",
                          appVersion, iosVersion, machine];
 
@@ -9301,14 +10449,91 @@ static NSString         *g_cyanide_upload_session_id = nil;
 static NSMutableSet<NSString *> *g_cyanide_upload_milestones = nil;
 static volatile int      g_cyanide_upload_seq = 0;
 
+static NSString *settings_current_diagnostic_log_text(NSString *path, NSString **outSource) {
+    NSString *snapshot = log_inapp_buffer_snapshot();
+    if (snapshot.length) {
+        if (outSource) *outSource = @"in_app_snapshot";
+        return snapshot;
+    }
+
+    if (path.length) {
+        NSString *fileLog = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+        if (fileLog.length) {
+            if (outSource) *outSource = @"session_file";
+            return fileLog;
+        }
+    }
+
+    if (outSource) *outSource = @"empty";
+    return @"";
+}
+
+static NSString *settings_diagnostic_log_with_header(NSString *rawLog,
+                                                     NSString *path,
+                                                     NSString *source,
+                                                     NSString *sessionId,
+                                                     NSString *kind,
+                                                     NSString *event,
+                                                     int seq) {
+    NSString *appVersion = settings_app_version_string();
+    NSString *appBuild = settings_app_build_string();
+    NSString *iosVersion = [UIDevice currentDevice].systemVersion ?: @"unknown";
+
+    struct utsname sysInfo;
+    uname(&sysInfo);
+    NSString *machine = [NSString stringWithUTF8String:sysInfo.machine] ?: @"unknown";
+
+    NSString *header = [NSString stringWithFormat:
+        @"=== Cyanide Diagnostic Log ===\n"
+        @"app_version : %@\n"
+        @"app_build   : %@\n"
+        @"ios_version : %@\n"
+        @"device      : %@\n"
+        @"log_file    : %@\n"
+        @"log_source  : %@\n"
+        @"session_id  : %@\n"
+        @"kind        : %@\n"
+        @"event       : %@\n"
+        @"seq         : %d\n"
+        @"==============================\n\n",
+        appVersion, appBuild, iosVersion, machine,
+        path.lastPathComponent ?: @"none",
+        source ?: @"unknown",
+        sessionId ?: @"none",
+        kind ?: @"",
+        event ?: @"",
+        seq];
+
+    return [header stringByAppendingString:rawLog ?: @""];
+}
+
+static NSURL *settings_write_snapshot_log_file(NSString *text) {
+    if (!text.length) return nil;
+
+    NSDateFormatter *df = [[NSDateFormatter alloc] init];
+    df.dateFormat = @"yyyyMMdd-HHmmss";
+    df.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+    df.timeZone = [NSTimeZone localTimeZone];
+
+    NSString *name = [NSString stringWithFormat:@"cyanide-snapshot-%@.log",
+                      [df stringFromDate:[NSDate date]]];
+    NSURL *url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:name]];
+    NSError *err = nil;
+    if (![text writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:&err]) {
+        printf("[LOG] failed to write snapshot share file: %s\n", err.localizedDescription.UTF8String);
+        return nil;
+    }
+    return url;
+}
+
 // kind = "milestone" (important chain transition) or "final"
 // (post-completion). Milestones are explicit so uploads line up with exploit,
 // RemoteCall, tweak, and live-loop boundaries instead of timer noise.
 static void cyanide_upload_log_with_kind_event(NSString *kind, NSString *event) {
     if (![[NSUserDefaults standardUserDefaults] boolForKey:kSettingsLogUploadEnabled]) return;
     NSString *path = log_most_recent_session_path();
-    if (!path) return;
-    NSString *rawLog = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+    NSString *logSource = nil;
+    NSString *rawLog = settings_current_diagnostic_log_text(path, &logSource);
     if (!rawLog.length) return;
 
     int seq = __sync_add_and_fetch(&g_cyanide_upload_seq, 1);
@@ -9322,24 +10547,10 @@ static void cyanide_upload_log_with_kind_event(NSString *kind, NSString *event) 
     uname(&sysInfo);
     NSString *machine = [NSString stringWithUTF8String:sysInfo.machine];
 
-    // Prepend a diagnostic header so each uploaded log is self-contained.
-    NSString *header = [NSString stringWithFormat:
-        @"=== Cyanide Diagnostic Log ===\n"
-        @"app_version : %@\n"
-        @"app_build   : %@\n"
-        @"ios_version : %@\n"
-        @"device      : %@\n"
-        @"log_file    : %@\n"
-        @"session_id  : %@\n"
-        @"kind        : %@\n"
-        @"event       : %@\n"
-        @"seq         : %d\n"
-        @"==============================\n\n",
-        appVersion, appBuild, iosVersion, machine, path.lastPathComponent,
-        sessionId, kind, event ?: @"", seq];
+    NSString *logPayload = settings_diagnostic_log_with_header(rawLog, path, logSource, sessionId, kind, event, seq);
 
     NSDictionary *body = @{
-        @"log": [header stringByAppendingString:rawLog],
+        @"log": logPayload,
         @"meta": @{
             @"build":      [NSString stringWithFormat:@"cyanide-%@-%@", appVersion, appBuild],
             @"appVersion": appVersion,
@@ -9351,6 +10562,7 @@ static void cyanide_upload_log_with_kind_event(NSString *kind, NSString *event) 
             @"kind":       kind,
             @"event":      event ?: @"",
             @"seq":        @(seq),
+            @"logSource":  logSource ?: @"unknown",
         }
     };
     NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
@@ -9360,11 +10572,12 @@ static void cyanide_upload_log_with_kind_event(NSString *kind, NSString *event) 
     req.HTTPMethod = @"POST";
     [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
     req.HTTPBody = data;
-    printf("[LOG] uploading diagnostic (%s%s%s seq=%d, %zu bytes)...\n",
+    printf("[LOG] uploading diagnostic (%s%s%s seq=%d source=%s, %zu bytes)...\n",
            kind.UTF8String,
            event.length ? ":" : "",
            event.length ? event.UTF8String : "",
            seq,
+           (logSource ?: @"unknown").UTF8String,
            (size_t)data.length);
     [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
         if (e) {
@@ -9495,6 +10708,1256 @@ void cyanide_present_contact(UIViewController *host)
                   preferredStyle:UIAlertControllerStyleAlert];
     [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
     [host presentViewController:ac animated:YES completion:nil];
+}
+
+- (UIColor *)snowBoardLiteAccentColorNamed:(NSString *)name
+{
+    if ([name isEqualToString:@"mint"]) return UIColor.systemMintColor;
+    if ([name isEqualToString:@"blue"]) return UIColor.systemBlueColor;
+    if ([name isEqualToString:@"amber"]) return UIColor.systemOrangeColor;
+    if ([name isEqualToString:@"red"]) return UIColor.systemRedColor;
+    if ([name isEqualToString:@"slate"]) return UIColor.systemGrayColor;
+    return UIColor.systemMintColor;
+}
+
+- (NSString *)snowBoardLiteSourceBadgeText:(NSString *)sourceType
+{
+    NSString *source = sourceType.lowercaseString ?: @"";
+    if ([source isEqualToString:@"built-in"]) return @"BUILT-IN";
+    if ([source isEqualToString:@"url"]) return @"URL";
+    if ([source isEqualToString:@"zip"]) return @"ZIP";
+    if ([source isEqualToString:@"deb"]) return @"DEB";
+    if ([source isEqualToString:@"folder"]) return @"FOLDER";
+    if (source.length > 0) return source.uppercaseString;
+    return @"THEME";
+}
+
+- (UIView *)snowBoardLitePreviewGridWithAccent:(UIColor *)accent
+                                      selected:(BOOL)selected
+                                        images:(NSArray<UIImage *> *)images
+{
+    UIView *preview = [[UIView alloc] init];
+    preview.translatesAutoresizingMaskIntoConstraints = NO;
+    preview.backgroundColor = [accent colorWithAlphaComponent:selected ? 0.20 : 0.12];
+    preview.layer.cornerRadius = 22.0;
+    preview.layer.cornerCurve = kCACornerCurveContinuous;
+
+    NSArray<UIColor *> *colors = @[
+        UIColor.systemBlueColor,
+        UIColor.systemOrangeColor,
+        UIColor.systemPinkColor,
+        UIColor.systemTealColor,
+    ];
+    NSArray<NSString *> *symbols = @[@"app.fill", @"safari.fill", @"message.fill", @"music.note"];
+    NSMutableArray<UIView *> *tiles = [NSMutableArray arrayWithCapacity:4];
+    for (NSUInteger i = 0; i < 4; i++) {
+        UIView *tile = [[UIView alloc] init];
+        tile.translatesAutoresizingMaskIntoConstraints = NO;
+        UIImage *themeIcon = (i < images.count) ? images[i] : nil;
+        tile.backgroundColor = themeIcon
+            ? UIColor.clearColor
+            : [colors[i] colorWithAlphaComponent:0.9];
+        tile.layer.cornerRadius = 9.0;
+        tile.layer.cornerCurve = kCACornerCurveContinuous;
+        tile.clipsToBounds = YES;
+        [preview addSubview:tile];
+        [tiles addObject:tile];
+
+        UIImageView *glyph = [[UIImageView alloc] initWithImage:themeIcon ?: [UIImage systemImageNamed:symbols[i]]];
+        glyph.translatesAutoresizingMaskIntoConstraints = NO;
+        glyph.tintColor = themeIcon ? nil : UIColor.whiteColor;
+        glyph.contentMode = themeIcon ? UIViewContentModeScaleAspectFill : UIViewContentModeScaleAspectFit;
+        [tile addSubview:glyph];
+        if (themeIcon) {
+            [NSLayoutConstraint activateConstraints:@[
+                [glyph.leadingAnchor constraintEqualToAnchor:tile.leadingAnchor],
+                [glyph.trailingAnchor constraintEqualToAnchor:tile.trailingAnchor],
+                [glyph.topAnchor constraintEqualToAnchor:tile.topAnchor],
+                [glyph.bottomAnchor constraintEqualToAnchor:tile.bottomAnchor],
+            ]];
+        } else {
+            [NSLayoutConstraint activateConstraints:@[
+                [glyph.centerXAnchor constraintEqualToAnchor:tile.centerXAnchor],
+                [glyph.centerYAnchor constraintEqualToAnchor:tile.centerYAnchor],
+                [glyph.widthAnchor constraintEqualToConstant:13.0],
+                [glyph.heightAnchor constraintEqualToConstant:13.0],
+            ]];
+        }
+    }
+
+    [NSLayoutConstraint activateConstraints:@[
+        [tiles[0].leadingAnchor constraintEqualToAnchor:preview.leadingAnchor constant:13.0],
+        [tiles[0].topAnchor constraintEqualToAnchor:preview.topAnchor constant:13.0],
+        [tiles[0].widthAnchor constraintEqualToConstant:20.0],
+        [tiles[0].heightAnchor constraintEqualToConstant:20.0],
+        [tiles[1].trailingAnchor constraintEqualToAnchor:preview.trailingAnchor constant:-13.0],
+        [tiles[1].topAnchor constraintEqualToAnchor:tiles[0].topAnchor],
+        [tiles[1].widthAnchor constraintEqualToAnchor:tiles[0].widthAnchor],
+        [tiles[1].heightAnchor constraintEqualToAnchor:tiles[0].heightAnchor],
+        [tiles[2].leadingAnchor constraintEqualToAnchor:tiles[0].leadingAnchor],
+        [tiles[2].bottomAnchor constraintEqualToAnchor:preview.bottomAnchor constant:-13.0],
+        [tiles[2].widthAnchor constraintEqualToAnchor:tiles[0].widthAnchor],
+        [tiles[2].heightAnchor constraintEqualToAnchor:tiles[0].heightAnchor],
+        [tiles[3].trailingAnchor constraintEqualToAnchor:tiles[1].trailingAnchor],
+        [tiles[3].bottomAnchor constraintEqualToAnchor:tiles[2].bottomAnchor],
+        [tiles[3].widthAnchor constraintEqualToAnchor:tiles[0].widthAnchor],
+        [tiles[3].heightAnchor constraintEqualToAnchor:tiles[0].heightAnchor],
+    ]];
+
+    return preview;
+}
+
+- (UILabel *)snowBoardLitePillWithText:(NSString *)text color:(UIColor *)color filled:(BOOL)filled
+{
+    UILabel *pill = [[UILabel alloc] init];
+    pill.translatesAutoresizingMaskIntoConstraints = NO;
+    pill.text = [NSString stringWithFormat:@"  %@  ", text ?: @""];
+    pill.textColor = filled ? UIColor.whiteColor : color;
+    pill.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightHeavy];
+    pill.backgroundColor = filled ? color : [color colorWithAlphaComponent:0.13];
+    pill.layer.cornerRadius = 10.0;
+    pill.layer.cornerCurve = kCACornerCurveContinuous;
+    pill.clipsToBounds = YES;
+    return pill;
+}
+
+- (UIView *)snowBoardLiteCountCapsuleWithText:(NSString *)text color:(UIColor *)color
+{
+    UIView *capsule = [[UIView alloc] init];
+    capsule.translatesAutoresizingMaskIntoConstraints = NO;
+    capsule.backgroundColor = [color colorWithAlphaComponent:0.13];
+    capsule.layer.cornerRadius = 13.0;
+    capsule.layer.cornerCurve = kCACornerCurveContinuous;
+    capsule.clipsToBounds = YES;
+
+    UILabel *label = [[UILabel alloc] init];
+    label.translatesAutoresizingMaskIntoConstraints = NO;
+    label.text = text ?: @"";
+    label.textColor = color;
+    label.font = [UIFont systemFontOfSize:11.5 weight:UIFontWeightHeavy];
+    [capsule addSubview:label];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [label.leadingAnchor constraintEqualToAnchor:capsule.leadingAnchor constant:10.0],
+        [label.trailingAnchor constraintEqualToAnchor:capsule.trailingAnchor constant:-10.0],
+        [label.topAnchor constraintEqualToAnchor:capsule.topAnchor constant:5.0],
+        [label.bottomAnchor constraintEqualToAnchor:capsule.bottomAnchor constant:-5.0],
+    ]];
+
+    return capsule;
+}
+
+- (UIControl *)snowBoardLiteCarouselCardForItem:(NSDictionary *)item
+{
+    BOOL selected = [item[@"selected"] boolValue];
+    BOOL builtIn = [item[@"builtIn"] boolValue];
+    UIColor *accent = selected ? UIColor.systemGreenColor : (builtIn ? UIColor.systemOrangeColor : UIColor.systemMintColor);
+
+    UIControl *card = [[UIControl alloc] init];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.backgroundColor = selected
+        ? [accent colorWithAlphaComponent:0.16]
+        : UIColor.secondarySystemGroupedBackgroundColor;
+    card.layer.cornerRadius = 24.0;
+    card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.layer.borderWidth = selected ? 1.5 : 1.0;
+    card.layer.borderColor = selected
+        ? [accent colorWithAlphaComponent:0.62].CGColor
+        : [UIColor.separatorColor colorWithAlphaComponent:0.20].CGColor;
+    card.layer.shadowColor = UIColor.blackColor.CGColor;
+    card.layer.shadowOpacity = selected ? 0.10 : 0.04;
+    card.layer.shadowRadius = selected ? 12.0 : 8.0;
+    card.layer.shadowOffset = CGSizeMake(0, selected ? 6.0 : 3.0);
+    [card addTarget:self action:@selector(snowBoardLiteCarouselThemeTapped:) forControlEvents:UIControlEventTouchUpInside];
+    objc_setAssociatedObject(card, "sblThemeID", item[@"id"] ?: @"", OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(card, "sblThemeTitle", item[@"title"] ?: @"Theme", OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(card, "sblThemeItem", item ?: @{}, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [card addInteraction:[[UIContextMenuInteraction alloc] initWithDelegate:self]];
+
+    NSArray<UIImage *> *previewImages =
+        settings_sbl_preview_images_for_theme(item[@"theme"], builtIn, 4);
+    UIView *preview = [self snowBoardLitePreviewGridWithAccent:accent
+                                                      selected:selected
+                                                        images:previewImages];
+    [card addSubview:preview];
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = item[@"title"] ?: @"Theme";
+    title.textColor = UIColor.labelColor;
+    title.font = [UIFont systemFontOfSize:15.0 weight:UIFontWeightBold];
+    title.numberOfLines = 2;
+    title.lineBreakMode = NSLineBreakByTruncatingTail;
+    [card addSubview:title];
+
+    UILabel *source = [self snowBoardLitePillWithText:[self snowBoardLiteSourceBadgeText:item[@"sourceType"]]
+                                                color:accent
+                                               filled:NO];
+    [card addSubview:source];
+
+    UILabel *count = [[UILabel alloc] init];
+    count.translatesAutoresizingMaskIntoConstraints = NO;
+    count.text = [NSString stringWithFormat:@"%@ icons", item[@"iconCount"] ?: @0];
+    count.textColor = UIColor.secondaryLabelColor;
+    count.font = [UIFont monospacedDigitSystemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    [card addSubview:count];
+
+    UILabel *state = nil;
+    if (selected) {
+        state = [self snowBoardLitePillWithText:@"ACTIVE" color:accent filled:YES];
+        [card addSubview:state];
+    }
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.widthAnchor constraintEqualToConstant:158.0],
+        [card.heightAnchor constraintEqualToConstant:196.0],
+
+        [preview.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12.0],
+        [preview.topAnchor constraintEqualToAnchor:card.topAnchor constant:12.0],
+        [preview.widthAnchor constraintEqualToConstant:70.0],
+        [preview.heightAnchor constraintEqualToConstant:70.0],
+
+        [source.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12.0],
+        [source.topAnchor constraintEqualToAnchor:preview.bottomAnchor constant:12.0],
+        [source.heightAnchor constraintGreaterThanOrEqualToConstant:20.0],
+
+        [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:12.0],
+        [title.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-12.0],
+        [title.topAnchor constraintEqualToAnchor:source.bottomAnchor constant:7.0],
+        [title.bottomAnchor constraintLessThanOrEqualToAnchor:count.topAnchor constant:-5.0],
+
+        [count.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [count.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+        [count.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-12.0],
+    ]];
+
+    if (state) {
+        [NSLayoutConstraint activateConstraints:@[
+            [state.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10.0],
+            [state.topAnchor constraintEqualToAnchor:card.topAnchor constant:12.0],
+            [state.heightAnchor constraintGreaterThanOrEqualToConstant:20.0],
+        ]];
+    }
+
+    return card;
+}
+
+- (UITableViewCell *)buildSnowBoardLiteCarouselCellInTableView:(UITableView *)tableView
+                                                           row:(NSDictionary *)row
+                                                     indexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"sbl-carousel"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:@"sbl-carousel"];
+    }
+    (void)indexPath;
+    cell.backgroundColor = UIColor.clearColor;
+    cell.contentView.backgroundColor = UIColor.clearColor;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.separatorInset = UIEdgeInsetsMake(0, CGRectGetWidth(tableView.bounds), 0, 0);
+    for (UIView *v in [cell.contentView.subviews copy]) [v removeFromSuperview];
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = row[@"title"] ?: @"Theme Library";
+    title.textColor = UIColor.labelColor;
+    title.font = [UIFont systemFontOfSize:20.0 weight:UIFontWeightBlack];
+    [cell.contentView addSubview:title];
+
+    UILabel *subtitle = [[UILabel alloc] init];
+    subtitle.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitle.text = row[@"subtitle"] ?: @"";
+    subtitle.textColor = UIColor.secondaryLabelColor;
+    subtitle.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    subtitle.numberOfLines = 2;
+    [cell.contentView addSubview:subtitle];
+
+    UIScrollView *scroll = [[UIScrollView alloc] init];
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    scroll.showsHorizontalScrollIndicator = NO;
+    scroll.alwaysBounceHorizontal = YES;
+    [cell.contentView addSubview:scroll];
+
+    UIStackView *stack = [[UIStackView alloc] init];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisHorizontal;
+    stack.spacing = 12.0;
+    stack.alignment = UIStackViewAlignmentCenter;
+    [scroll addSubview:stack];
+
+    NSArray<NSDictionary *> *items = row[@"items"];
+    for (NSDictionary *item in items) {
+        [stack addArrangedSubview:[self snowBoardLiteCarouselCardForItem:item]];
+    }
+
+    [NSLayoutConstraint activateConstraints:@[
+        [title.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:12.0],
+        [title.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-12.0],
+        [title.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:10.0],
+
+        [subtitle.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [subtitle.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+        [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:3.0],
+
+        [scroll.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor],
+        [scroll.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:12.0],
+        [scroll.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10.0],
+        [scroll.heightAnchor constraintEqualToConstant:208.0],
+
+        [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:12.0],
+        [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-12.0],
+        [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor],
+        [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor],
+        [stack.heightAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.heightAnchor],
+    ]];
+
+    return cell;
+}
+
+- (void)snowBoardLiteLoadOnlinePreviewURLString:(NSString *)urlString
+                                  intoImageView:(UIImageView *)imageView
+{
+    NSString *trimmed = [urlString stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSURL *url = [NSURL URLWithString:trimmed];
+    if (!url || imageView == nil) return;
+
+    static NSCache<NSString *, UIImage *> *cache;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        cache = [[NSCache alloc] init];
+        cache.countLimit = 64;
+    });
+
+    NSString *key = url.absoluteString;
+    UIImage *cached = [cache objectForKey:key];
+    if (cached) {
+        NSLayoutConstraint *widthConstraint = objc_getAssociatedObject(imageView, "sblOnlinePreviewWidthConstraint");
+        NSNumber *heightNumber = objc_getAssociatedObject(imageView, "sblOnlinePreviewFixedHeight");
+        CGFloat fixedHeight = heightNumber.doubleValue > 0.0 ? heightNumber.doubleValue : 172.0;
+        if (widthConstraint && cached.size.height > 0.0) {
+            CGFloat fittedWidth = ceil(fixedHeight * (cached.size.width / cached.size.height));
+            widthConstraint.constant = MAX(72.0, MIN(fittedWidth, 320.0));
+        }
+        imageView.image = cached;
+        imageView.contentMode = UIViewContentModeScaleAspectFill;
+        imageView.tintColor = nil;
+        return;
+    }
+
+    objc_setAssociatedObject(imageView,
+                             "sblOnlinePreviewURL",
+                             key,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+    request.timeoutInterval = 20.0;
+    [request setValue:@"Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+   forHTTPHeaderField:@"User-Agent"];
+
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request
+                                     completionHandler:^(NSData *data,
+                                                         NSURLResponse *response,
+                                                         NSError *error) {
+        (void)response;
+        if (error || data.length == 0) return;
+        UIImage *image = [UIImage imageWithData:data];
+        if (!image) return;
+        [cache setObject:image forKey:key];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *expected = objc_getAssociatedObject(imageView, "sblOnlinePreviewURL");
+            if (![expected isEqualToString:key]) return;
+            NSLayoutConstraint *widthConstraint = objc_getAssociatedObject(imageView, "sblOnlinePreviewWidthConstraint");
+            NSNumber *heightNumber = objc_getAssociatedObject(imageView, "sblOnlinePreviewFixedHeight");
+            CGFloat fixedHeight = heightNumber.doubleValue > 0.0 ? heightNumber.doubleValue : 172.0;
+            if (widthConstraint && image.size.height > 0.0) {
+                CGFloat fittedWidth = ceil(fixedHeight * (image.size.width / image.size.height));
+                widthConstraint.constant = MAX(72.0, MIN(fittedWidth, 320.0));
+                [imageView.superview.superview setNeedsLayout];
+            }
+            imageView.image = image;
+            imageView.contentMode = UIViewContentModeScaleAspectFill;
+            imageView.tintColor = nil;
+        });
+    }] resume];
+}
+
+- (UIView *)snowBoardLiteOnlinePreviewTileWithURLString:(NSString *)urlString
+                                                 accent:(UIColor *)accent
+                                                 symbol:(NSString *)symbol
+{
+    UIView *tile = [[UIView alloc] init];
+    tile.translatesAutoresizingMaskIntoConstraints = NO;
+    tile.backgroundColor = [accent colorWithAlphaComponent:0.16];
+    tile.layer.cornerRadius = 18.0;
+    tile.layer.cornerCurve = kCACornerCurveContinuous;
+    tile.clipsToBounds = YES;
+
+    UIImage *placeholder = [UIImage systemImageNamed:symbol ?: @"photo.on.rectangle.angled"] ?:
+        [UIImage systemImageNamed:@"photo.on.rectangle.angled"];
+    UIImageView *imageView = [[UIImageView alloc] initWithImage:placeholder];
+    imageView.translatesAutoresizingMaskIntoConstraints = NO;
+    imageView.tintColor = [accent colorWithAlphaComponent:0.70];
+    imageView.contentMode = UIViewContentModeScaleAspectFit;
+    [tile addSubview:imageView];
+
+    NSLayoutConstraint *widthConstraint = [tile.widthAnchor constraintEqualToConstant:88.0];
+    NSLayoutConstraint *heightConstraint = [tile.heightAnchor constraintEqualToConstant:172.0];
+    objc_setAssociatedObject(imageView,
+                             "sblOnlinePreviewWidthConstraint",
+                             widthConstraint,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(imageView,
+                             "sblOnlinePreviewFixedHeight",
+                             @(172.0),
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    [NSLayoutConstraint activateConstraints:@[
+        widthConstraint,
+        heightConstraint,
+        [imageView.leadingAnchor constraintEqualToAnchor:tile.leadingAnchor],
+        [imageView.trailingAnchor constraintEqualToAnchor:tile.trailingAnchor],
+        [imageView.topAnchor constraintEqualToAnchor:tile.topAnchor],
+        [imageView.bottomAnchor constraintEqualToAnchor:tile.bottomAnchor],
+    ]];
+
+    [self snowBoardLiteLoadOnlinePreviewURLString:urlString intoImageView:imageView];
+    return tile;
+}
+
+- (UIControl *)snowBoardLiteOnlineDownloadCardForItem:(NSDictionary *)item
+{
+    UIColor *accent = item[@"color"] ?: UIColor.systemMintColor;
+    NSDictionary *installedTheme = [self installedSnowBoardLiteOnlineThemeForItem:item];
+    BOOL installed = installedTheme != nil;
+    UIControl *card = [[UIControl alloc] init];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.backgroundColor = [accent colorWithAlphaComponent:0.10];
+    card.layer.cornerRadius = 22.0;
+    card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [accent colorWithAlphaComponent:0.22].CGColor;
+    card.clipsToBounds = YES;
+    [card addTarget:self action:@selector(snowBoardLiteOnlineDownloadTapped:)
+   forControlEvents:UIControlEventTouchUpInside];
+    objc_setAssociatedObject(card, "sblOnlineURL", item[@"url"] ?: @"", OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(card, "sblOnlineName", item[@"title"] ?: @"Theme", OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(card,
+                             "sblOnlineInstalledThemeID",
+                             installedTheme[@"id"] ?: @"",
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    UIScrollView *previewScroll = [[UIScrollView alloc] init];
+    previewScroll.translatesAutoresizingMaskIntoConstraints = NO;
+    previewScroll.showsHorizontalScrollIndicator = NO;
+    previewScroll.alwaysBounceHorizontal = YES;
+    previewScroll.clipsToBounds = YES;
+    [card addSubview:previewScroll];
+
+    UIStackView *previewStack = [[UIStackView alloc] init];
+    previewStack.translatesAutoresizingMaskIntoConstraints = NO;
+    previewStack.axis = UILayoutConstraintAxisHorizontal;
+    previewStack.spacing = 8.0;
+    [previewScroll addSubview:previewStack];
+
+    NSArray<NSString *> *previewURLs = [item[@"previewURLs"] isKindOfClass:NSArray.class]
+        ? item[@"previewURLs"]
+        : @[];
+    if (previewURLs.count == 0 && [item[@"previewURL"] isKindOfClass:NSString.class]) {
+        previewURLs = @[item[@"previewURL"]];
+    }
+    if (previewURLs.count == 0) {
+        previewURLs = @[@""];
+    }
+    for (NSString *previewURL in previewURLs) {
+        [previewStack addArrangedSubview:[self snowBoardLiteOnlinePreviewTileWithURLString:previewURL
+                                                                                    accent:accent
+                                                                                    symbol:item[@"symbol"]]];
+    }
+
+    UIView *iconPlate = [[UIView alloc] init];
+    iconPlate.translatesAutoresizingMaskIntoConstraints = NO;
+    iconPlate.backgroundColor = [accent colorWithAlphaComponent:0.18];
+    iconPlate.layer.cornerRadius = 16.0;
+    iconPlate.layer.cornerCurve = kCACornerCurveContinuous;
+    [card addSubview:iconPlate];
+
+    UIImage *symbolImage = [UIImage systemImageNamed:item[@"symbol"] ?: @"arrow.down.circle.fill"] ?:
+        [UIImage systemImageNamed:@"arrow.down.circle.fill"];
+    UIImageView *icon = [[UIImageView alloc] initWithImage:symbolImage];
+    icon.translatesAutoresizingMaskIntoConstraints = NO;
+    icon.tintColor = accent;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    [iconPlate addSubview:icon];
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = item[@"title"] ?: @"Theme";
+    title.textColor = UIColor.labelColor;
+    title.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightBlack];
+    [card addSubview:title];
+
+    UILabel *subtitle = [[UILabel alloc] init];
+    subtitle.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitle.text = item[@"subtitle"] ?: @"";
+    subtitle.textColor = UIColor.secondaryLabelColor;
+    subtitle.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    subtitle.numberOfLines = 2;
+    [card addSubview:subtitle];
+
+    UIView *actionPlate = [[UIView alloc] init];
+    actionPlate.translatesAutoresizingMaskIntoConstraints = NO;
+    actionPlate.backgroundColor = [accent colorWithAlphaComponent:installed ? 0.20 : 0.14];
+    actionPlate.layer.cornerRadius = 18.0;
+    actionPlate.layer.cornerCurve = kCACornerCurveContinuous;
+    [card addSubview:actionPlate];
+
+    UIImage *actionImage = [UIImage systemImageNamed:installed ? @"checkmark.circle.fill" : @"arrow.down.circle.fill"] ?:
+        [UIImage systemImageNamed:@"arrow.down.circle.fill"];
+    UIImageView *actionIcon = [[UIImageView alloc] initWithImage:actionImage];
+    actionIcon.translatesAutoresizingMaskIntoConstraints = NO;
+    actionIcon.tintColor = installed ? UIColor.systemGreenColor : accent;
+    actionIcon.contentMode = UIViewContentModeScaleAspectFit;
+    [actionPlate addSubview:actionIcon];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.heightAnchor constraintGreaterThanOrEqualToConstant:270.0],
+
+        [previewScroll.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:10.0],
+        [previewScroll.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-10.0],
+        [previewScroll.topAnchor constraintEqualToAnchor:card.topAnchor constant:10.0],
+        [previewScroll.heightAnchor constraintEqualToConstant:172.0],
+
+        [previewStack.leadingAnchor constraintEqualToAnchor:previewScroll.contentLayoutGuide.leadingAnchor],
+        [previewStack.trailingAnchor constraintEqualToAnchor:previewScroll.contentLayoutGuide.trailingAnchor],
+        [previewStack.topAnchor constraintEqualToAnchor:previewScroll.contentLayoutGuide.topAnchor],
+        [previewStack.bottomAnchor constraintEqualToAnchor:previewScroll.contentLayoutGuide.bottomAnchor],
+        [previewStack.heightAnchor constraintEqualToAnchor:previewScroll.frameLayoutGuide.heightAnchor],
+
+        [iconPlate.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14.0],
+        [iconPlate.topAnchor constraintEqualToAnchor:previewScroll.bottomAnchor constant:12.0],
+        [iconPlate.widthAnchor constraintEqualToConstant:44.0],
+        [iconPlate.heightAnchor constraintEqualToConstant:44.0],
+
+        [icon.centerXAnchor constraintEqualToAnchor:iconPlate.centerXAnchor],
+        [icon.centerYAnchor constraintEqualToAnchor:iconPlate.centerYAnchor],
+        [icon.widthAnchor constraintEqualToConstant:22.0],
+        [icon.heightAnchor constraintEqualToConstant:22.0],
+
+        [actionPlate.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14.0],
+        [actionPlate.centerYAnchor constraintEqualToAnchor:iconPlate.centerYAnchor],
+        [actionPlate.widthAnchor constraintEqualToConstant:36.0],
+        [actionPlate.heightAnchor constraintEqualToConstant:36.0],
+
+        [actionIcon.centerXAnchor constraintEqualToAnchor:actionPlate.centerXAnchor],
+        [actionIcon.centerYAnchor constraintEqualToAnchor:actionPlate.centerYAnchor],
+        [actionIcon.widthAnchor constraintEqualToConstant:23.0],
+        [actionIcon.heightAnchor constraintEqualToConstant:23.0],
+
+        [title.leadingAnchor constraintEqualToAnchor:iconPlate.trailingAnchor constant:12.0],
+        [title.trailingAnchor constraintLessThanOrEqualToAnchor:actionPlate.leadingAnchor constant:-12.0],
+        [title.topAnchor constraintEqualToAnchor:iconPlate.topAnchor constant:1.0],
+
+        [subtitle.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [subtitle.trailingAnchor constraintLessThanOrEqualToAnchor:actionPlate.leadingAnchor constant:-12.0],
+        [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:4.0],
+        [subtitle.bottomAnchor constraintLessThanOrEqualToAnchor:card.bottomAnchor constant:-14.0],
+    ]];
+
+    return card;
+}
+
+- (UITableViewCell *)buildSnowBoardLiteOnlineDownloadsCellInTableView:(UITableView *)tableView
+                                                                  row:(NSDictionary *)row
+                                                            indexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"sbl-online"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:@"sbl-online"];
+    }
+    (void)indexPath;
+    cell.backgroundColor = UIColor.clearColor;
+    cell.contentView.backgroundColor = UIColor.clearColor;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.separatorInset = UIEdgeInsetsMake(0, CGRectGetWidth(tableView.bounds), 0, 0);
+    for (UIView *v in [cell.contentView.subviews copy]) [v removeFromSuperview];
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = row[@"title"] ?: @"Online Downloads";
+    title.textColor = UIColor.labelColor;
+    title.font = [UIFont systemFontOfSize:20.0 weight:UIFontWeightBlack];
+    [cell.contentView addSubview:title];
+
+    UILabel *subtitle = [[UILabel alloc] init];
+    subtitle.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitle.text = row[@"subtitle"] ?: @"";
+    subtitle.textColor = UIColor.secondaryLabelColor;
+    subtitle.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    subtitle.numberOfLines = 2;
+    [cell.contentView addSubview:subtitle];
+
+    UIStackView *stack = [[UIStackView alloc] init];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 10.0;
+    [cell.contentView addSubview:stack];
+
+    NSArray<NSDictionary *> *items = row[@"items"];
+    for (NSDictionary *item in items) {
+        [stack addArrangedSubview:[self snowBoardLiteOnlineDownloadCardForItem:item]];
+    }
+
+    [NSLayoutConstraint activateConstraints:@[
+        [title.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:12.0],
+        [title.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-12.0],
+        [title.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:10.0],
+
+        [subtitle.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [subtitle.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+        [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:3.0],
+
+        [stack.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:12.0],
+        [stack.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-12.0],
+        [stack.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:12.0],
+        [stack.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-10.0],
+    ]];
+
+    return cell;
+}
+
+- (UIButton *)snowBoardLiteToolButtonWithTitle:(NSString *)title symbol:(NSString *)symbol action:(NSString *)action
+{
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    button.translatesAutoresizingMaskIntoConstraints = NO;
+    [button setTitle:title forState:UIControlStateNormal];
+    [button setImage:[UIImage systemImageNamed:symbol] forState:UIControlStateNormal];
+    button.tintColor = UIColor.systemMintColor;
+    button.titleLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightHeavy];
+    button.backgroundColor = [UIColor.systemMintColor colorWithAlphaComponent:0.12];
+    button.layer.cornerRadius = 17.0;
+    button.layer.cornerCurve = kCACornerCurveContinuous;
+    button.contentEdgeInsets = UIEdgeInsetsMake(8.0, 10.0, 8.0, 10.0);
+    button.semanticContentAttribute = UISemanticContentAttributeForceLeftToRight;
+    objc_setAssociatedObject(button, "sblAction", action ?: @"", OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [button addTarget:self action:@selector(snowBoardLiteToolButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
+    return button;
+}
+
+- (UITableViewCell *)buildSnowBoardLiteHelpCellInTableView:(UITableView *)tableView
+                                                       row:(NSDictionary *)row
+                                                 indexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"sbl-help"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:@"sbl-help"];
+    }
+    (void)indexPath;
+    cell.backgroundColor = UIColor.clearColor;
+    cell.contentView.backgroundColor = UIColor.clearColor;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.separatorInset = UIEdgeInsetsMake(0, CGRectGetWidth(tableView.bounds), 0, 0);
+    for (UIView *v in [cell.contentView.subviews copy]) [v removeFromSuperview];
+
+    UIView *card = [[UIView alloc] init];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    card.layer.cornerRadius = 24.0;
+    card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.18].CGColor;
+    [cell.contentView addSubview:card];
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = row[@"title"] ?: @"Import & Help";
+    title.textColor = UIColor.labelColor;
+    title.font = [UIFont systemFontOfSize:18.0 weight:UIFontWeightBlack];
+    [card addSubview:title];
+
+    UILabel *subtitle = [[UILabel alloc] init];
+    subtitle.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitle.text = row[@"subtitle"] ?: @"";
+    subtitle.textColor = UIColor.secondaryLabelColor;
+    subtitle.font = [UIFont systemFontOfSize:12.8 weight:UIFontWeightMedium];
+    subtitle.numberOfLines = 3;
+    [card addSubview:subtitle];
+
+    UIStackView *buttons = [[UIStackView alloc] initWithArrangedSubviews:@[
+        [self snowBoardLiteToolButtonWithTitle:@"Local" symbol:@"folder.badge.plus" action:@"sbl-import"],
+        [self snowBoardLiteToolButtonWithTitle:@"URL" symbol:@"link.badge.plus" action:@"sbl-import-url"],
+        [self snowBoardLiteToolButtonWithTitle:@"Guide" symbol:@"questionmark.circle.fill" action:@"sbl-guide"],
+    ]];
+    buttons.translatesAutoresizingMaskIntoConstraints = NO;
+    buttons.axis = UILayoutConstraintAxisHorizontal;
+    buttons.spacing = 8.0;
+    buttons.distribution = UIStackViewDistributionFillEqually;
+    [card addSubview:buttons];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:12.0],
+        [card.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-12.0],
+        [card.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:8.0],
+        [card.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-8.0],
+
+        [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18.0],
+        [title.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-18.0],
+        [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:18.0],
+
+        [subtitle.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [subtitle.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+        [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:6.0],
+
+        [buttons.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [buttons.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+        [buttons.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:14.0],
+        [buttons.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-18.0],
+        [buttons.heightAnchor constraintEqualToConstant:38.0],
+    ]];
+
+    return cell;
+}
+
+- (UITableViewCell *)buildSnowBoardLiteThemeCardCellInTableView:(UITableView *)tableView
+                                                            row:(NSDictionary *)row
+                                                      indexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"sbl-theme-card"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:@"sbl-theme-card"];
+    }
+    (void)indexPath;
+    cell.backgroundColor = UIColor.clearColor;
+    cell.contentView.backgroundColor = UIColor.clearColor;
+    cell.separatorInset = UIEdgeInsetsMake(0, CGRectGetWidth(tableView.bounds), 0, 0);
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.accessoryView = nil;
+    cell.selectionStyle = UITableViewCellSelectionStyleDefault;
+    cell.userInteractionEnabled = YES;
+    for (UIView *v in [cell.contentView.subviews copy]) [v removeFromSuperview];
+
+    BOOL selected = [row[@"selected"] boolValue];
+    UIColor *accent = selected ? UIColor.systemGreenColor : UIColor.systemMintColor;
+
+    UIView *card = [[UIView alloc] init];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    card.layer.cornerRadius = 24.0;
+    card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.layer.borderWidth = selected ? 1.5 : 1.0;
+    card.layer.borderColor = selected
+        ? [accent colorWithAlphaComponent:0.62].CGColor
+        : [UIColor.separatorColor colorWithAlphaComponent:0.18].CGColor;
+    card.layer.shadowColor = UIColor.blackColor.CGColor;
+    card.layer.shadowOpacity = selected ? 0.11 : 0.06;
+    card.layer.shadowRadius = selected ? 14.0 : 10.0;
+    card.layer.shadowOffset = CGSizeMake(0, selected ? 7.0 : 4.0);
+    [cell.contentView addSubview:card];
+
+    UIView *preview = [[UIView alloc] init];
+    preview.translatesAutoresizingMaskIntoConstraints = NO;
+    preview.backgroundColor = [accent colorWithAlphaComponent:selected ? 0.18 : 0.12];
+    preview.layer.cornerRadius = 20.0;
+    preview.layer.cornerCurve = kCACornerCurveContinuous;
+    [card addSubview:preview];
+
+    NSArray<UIColor *> *tileColors = @[
+        [UIColor.systemBlueColor colorWithAlphaComponent:0.88],
+        [UIColor.systemOrangeColor colorWithAlphaComponent:0.88],
+        [UIColor.systemPinkColor colorWithAlphaComponent:0.88],
+        [UIColor.systemTealColor colorWithAlphaComponent:0.88],
+    ];
+    NSArray<NSString *> *tileSymbols = @[@"app.fill", @"safari.fill", @"message.fill", @"music.note"];
+    NSMutableArray<UIView *> *tiles = [NSMutableArray array];
+    for (NSUInteger i = 0; i < 4; i++) {
+        UIView *tile = [[UIView alloc] init];
+        tile.translatesAutoresizingMaskIntoConstraints = NO;
+        tile.backgroundColor = tileColors[i];
+        tile.layer.cornerRadius = 8.0;
+        tile.layer.cornerCurve = kCACornerCurveContinuous;
+        [preview addSubview:tile];
+        [tiles addObject:tile];
+
+        UIImageView *glyph = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:tileSymbols[i]]];
+        glyph.translatesAutoresizingMaskIntoConstraints = NO;
+        glyph.tintColor = UIColor.whiteColor;
+        glyph.contentMode = UIViewContentModeScaleAspectFit;
+        [tile addSubview:glyph];
+        [NSLayoutConstraint activateConstraints:@[
+            [glyph.centerXAnchor constraintEqualToAnchor:tile.centerXAnchor],
+            [glyph.centerYAnchor constraintEqualToAnchor:tile.centerYAnchor],
+            [glyph.widthAnchor constraintEqualToConstant:13.0],
+            [glyph.heightAnchor constraintEqualToConstant:13.0],
+        ]];
+    }
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = row[@"title"] ?: @"Imported Theme";
+    title.textColor = UIColor.labelColor;
+    title.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightBold];
+    title.numberOfLines = 1;
+    [card addSubview:title];
+
+    UILabel *state = [[UILabel alloc] init];
+    state.translatesAutoresizingMaskIntoConstraints = NO;
+    state.text = selected ? @"  Active  " : @"  Tap  ";
+    state.textColor = selected ? UIColor.whiteColor : accent;
+    state.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightHeavy];
+    state.backgroundColor = selected ? accent : [accent colorWithAlphaComponent:0.13];
+    state.layer.cornerRadius = 12.0;
+    state.layer.cornerCurve = kCACornerCurveContinuous;
+    state.clipsToBounds = YES;
+    [card addSubview:state];
+
+    UILabel *sourceBadge = [[UILabel alloc] init];
+    sourceBadge.translatesAutoresizingMaskIntoConstraints = NO;
+    sourceBadge.text = [NSString stringWithFormat:@"  %@  ",
+                        [self snowBoardLiteSourceBadgeText:row[@"sourceType"]]];
+    sourceBadge.textColor = accent;
+    sourceBadge.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightHeavy];
+    sourceBadge.backgroundColor = [accent colorWithAlphaComponent:0.11];
+    sourceBadge.layer.cornerRadius = 10.0;
+    sourceBadge.layer.cornerCurve = kCACornerCurveContinuous;
+    sourceBadge.clipsToBounds = YES;
+    [card addSubview:sourceBadge];
+
+    UILabel *iconCount = [[UILabel alloc] init];
+    iconCount.translatesAutoresizingMaskIntoConstraints = NO;
+    iconCount.text = [NSString stringWithFormat:@"%@ icons", row[@"iconCount"] ?: @0];
+    iconCount.textColor = UIColor.secondaryLabelColor;
+    iconCount.font = [UIFont monospacedDigitSystemFontOfSize:12.0 weight:UIFontWeightSemibold];
+    [card addSubview:iconCount];
+
+    NSString *importedAt = row[@"importedAt"] ?: @"";
+    NSNumber *bundleCount = row[@"iconBundlesCount"] ?: @0;
+    NSNumber *skippedCount = row[@"skippedCount"] ?: @0;
+    NSNumber *duplicateCount = row[@"duplicateCount"] ?: @0;
+    NSMutableArray<NSString *> *parts = [NSMutableArray array];
+    if (importedAt.length > 0) [parts addObject:[NSString stringWithFormat:@"Imported %@", importedAt]];
+    if (bundleCount.integerValue > 0) [parts addObject:[NSString stringWithFormat:@"%@ IconBundles", bundleCount]];
+    if (skippedCount.integerValue > 0) [parts addObject:[NSString stringWithFormat:@"%@ skipped", skippedCount]];
+    if (duplicateCount.integerValue > 0) [parts addObject:[NSString stringWithFormat:@"%@ duplicate", duplicateCount]];
+
+    UILabel *details = [[UILabel alloc] init];
+    details.translatesAutoresizingMaskIntoConstraints = NO;
+    details.text = parts.count > 0 ? [parts componentsJoinedByString:@" · "] : @"Ready to activate.";
+    details.textColor = UIColor.secondaryLabelColor;
+    details.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightMedium];
+    details.numberOfLines = 2;
+    [card addSubview:details];
+
+    UIImageView *trash = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"trash"]];
+    trash.translatesAutoresizingMaskIntoConstraints = NO;
+    trash.tintColor = UIColor.tertiaryLabelColor;
+    trash.contentMode = UIViewContentModeScaleAspectFit;
+    [card addSubview:trash];
+
+    UILabel *swipe = [[UILabel alloc] init];
+    swipe.translatesAutoresizingMaskIntoConstraints = NO;
+    swipe.text = @"Swipe to remove";
+    swipe.textColor = UIColor.tertiaryLabelColor;
+    swipe.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightSemibold];
+    [card addSubview:swipe];
+
+    UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [card.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+        [card.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+        [card.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:7.0],
+        [card.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-7.0],
+
+        [preview.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:16.0],
+        [preview.centerYAnchor constraintEqualToAnchor:card.centerYAnchor],
+        [preview.widthAnchor constraintEqualToConstant:68.0],
+        [preview.heightAnchor constraintEqualToConstant:68.0],
+
+        [tiles[0].leadingAnchor constraintEqualToAnchor:preview.leadingAnchor constant:12.0],
+        [tiles[0].topAnchor constraintEqualToAnchor:preview.topAnchor constant:12.0],
+        [tiles[0].widthAnchor constraintEqualToConstant:19.0],
+        [tiles[0].heightAnchor constraintEqualToConstant:19.0],
+        [tiles[1].trailingAnchor constraintEqualToAnchor:preview.trailingAnchor constant:-12.0],
+        [tiles[1].topAnchor constraintEqualToAnchor:tiles[0].topAnchor],
+        [tiles[1].widthAnchor constraintEqualToAnchor:tiles[0].widthAnchor],
+        [tiles[1].heightAnchor constraintEqualToAnchor:tiles[0].heightAnchor],
+        [tiles[2].leadingAnchor constraintEqualToAnchor:tiles[0].leadingAnchor],
+        [tiles[2].bottomAnchor constraintEqualToAnchor:preview.bottomAnchor constant:-12.0],
+        [tiles[2].widthAnchor constraintEqualToAnchor:tiles[0].widthAnchor],
+        [tiles[2].heightAnchor constraintEqualToAnchor:tiles[0].heightAnchor],
+        [tiles[3].trailingAnchor constraintEqualToAnchor:tiles[1].trailingAnchor],
+        [tiles[3].bottomAnchor constraintEqualToAnchor:tiles[2].bottomAnchor],
+        [tiles[3].widthAnchor constraintEqualToAnchor:tiles[0].widthAnchor],
+        [tiles[3].heightAnchor constraintEqualToAnchor:tiles[0].heightAnchor],
+
+        [state.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16.0],
+        [state.topAnchor constraintEqualToAnchor:card.topAnchor constant:15.0],
+        [state.heightAnchor constraintGreaterThanOrEqualToConstant:24.0],
+
+        [title.leadingAnchor constraintEqualToAnchor:preview.trailingAnchor constant:14.0],
+        [title.trailingAnchor constraintLessThanOrEqualToAnchor:state.leadingAnchor constant:-10.0],
+        [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:15.0],
+
+        [sourceBadge.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [sourceBadge.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:7.0],
+        [sourceBadge.heightAnchor constraintGreaterThanOrEqualToConstant:20.0],
+
+        [iconCount.leadingAnchor constraintEqualToAnchor:sourceBadge.trailingAnchor constant:8.0],
+        [iconCount.centerYAnchor constraintEqualToAnchor:sourceBadge.centerYAnchor],
+        [iconCount.trailingAnchor constraintLessThanOrEqualToAnchor:card.trailingAnchor constant:-16.0],
+
+        [details.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [details.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16.0],
+        [details.topAnchor constraintEqualToAnchor:sourceBadge.bottomAnchor constant:7.0],
+
+        [trash.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [trash.topAnchor constraintEqualToAnchor:details.bottomAnchor constant:8.0],
+        [trash.widthAnchor constraintEqualToConstant:12.0],
+        [trash.heightAnchor constraintEqualToConstant:12.0],
+        [trash.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-15.0],
+
+        [swipe.leadingAnchor constraintEqualToAnchor:trash.trailingAnchor constant:4.0],
+        [swipe.centerYAnchor constraintEqualToAnchor:trash.centerYAnchor],
+        [swipe.trailingAnchor constraintLessThanOrEqualToAnchor:card.trailingAnchor constant:-16.0],
+    ]];
+
+    return cell;
+}
+
+- (UITableViewCell *)buildSnowBoardLiteOnlineEntryCellInTableView:(UITableView *)tableView
+                                                              row:(NSDictionary *)row
+                                                        indexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"sbl-online-entry"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:@"sbl-online-entry"];
+    }
+    (void)indexPath;
+    cell.backgroundColor = UIColor.clearColor;
+    cell.contentView.backgroundColor = UIColor.clearColor;
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.separatorInset = UIEdgeInsetsMake(0, CGRectGetWidth(tableView.bounds), 0, 0);
+    for (UIView *v in [cell.contentView.subviews copy]) [v removeFromSuperview];
+
+    UIColor *accent = UIColor.systemMintColor;
+    UIView *card = [[UIView alloc] init];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    card.layer.cornerRadius = 24.0;
+    card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [accent colorWithAlphaComponent:0.22].CGColor;
+    card.clipsToBounds = YES;
+    [cell.contentView addSubview:card];
+
+    UIView *glow = [[UIView alloc] init];
+    glow.translatesAutoresizingMaskIntoConstraints = NO;
+    glow.backgroundColor = [accent colorWithAlphaComponent:0.13];
+    glow.layer.cornerRadius = 28.0;
+    glow.layer.cornerCurve = kCACornerCurveContinuous;
+    [card addSubview:glow];
+
+    NSArray<NSDictionary *> *items = [self snowBoardLiteOnlineDownloadItems];
+    NSMutableArray<UIView *> *previewTiles = [NSMutableArray array];
+    for (NSUInteger i = 0; i < 3; i++) {
+        NSDictionary *item = i < items.count ? items[i] : @{};
+        NSArray *urls = [item[@"previewURLs"] isKindOfClass:NSArray.class] ? item[@"previewURLs"] : @[];
+        NSString *url = urls.count > 0 ? urls[0] : @"";
+        UIColor *tileAccent = item[@"color"] ?: accent;
+        UIView *tile = [[UIView alloc] init];
+        tile.translatesAutoresizingMaskIntoConstraints = NO;
+        tile.backgroundColor = [tileAccent colorWithAlphaComponent:0.18];
+        tile.layer.cornerRadius = 15.0;
+        tile.layer.cornerCurve = kCACornerCurveContinuous;
+        tile.clipsToBounds = YES;
+        tile.layer.borderWidth = 2.0;
+        tile.layer.borderColor = UIColor.secondarySystemGroupedBackgroundColor.CGColor;
+
+        UIImage *placeholder = [UIImage systemImageNamed:item[@"symbol"] ?: @"photo.on.rectangle.angled"] ?:
+            [UIImage systemImageNamed:@"photo.on.rectangle.angled"];
+        UIImageView *imageView = [[UIImageView alloc] initWithImage:placeholder];
+        imageView.translatesAutoresizingMaskIntoConstraints = NO;
+        imageView.tintColor = [tileAccent colorWithAlphaComponent:0.70];
+        imageView.contentMode = UIViewContentModeScaleAspectFit;
+        [tile addSubview:imageView];
+        [NSLayoutConstraint activateConstraints:@[
+            [imageView.leadingAnchor constraintEqualToAnchor:tile.leadingAnchor],
+            [imageView.trailingAnchor constraintEqualToAnchor:tile.trailingAnchor],
+            [imageView.topAnchor constraintEqualToAnchor:tile.topAnchor],
+            [imageView.bottomAnchor constraintEqualToAnchor:tile.bottomAnchor],
+        ]];
+        [self snowBoardLiteLoadOnlinePreviewURLString:url intoImageView:imageView];
+
+        [card addSubview:tile];
+        [previewTiles addObject:tile];
+    }
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = row[@"title"] ?: @"Online Themes";
+    title.textColor = UIColor.labelColor;
+    title.font = [UIFont systemFontOfSize:18.0 weight:UIFontWeightBlack];
+    [card addSubview:title];
+
+    UILabel *subtitle = [[UILabel alloc] init];
+    subtitle.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitle.text = row[@"subtitle"] ?: @"";
+    subtitle.textColor = UIColor.secondaryLabelColor;
+    subtitle.font = [UIFont systemFontOfSize:12.8 weight:UIFontWeightSemibold];
+    subtitle.numberOfLines = 2;
+    [card addSubview:subtitle];
+
+    UIView *pill = [self snowBoardLiteCountCapsuleWithText:[NSString stringWithFormat:@"%lu curated", (unsigned long)items.count]
+                                                     color:accent];
+    [card addSubview:pill];
+
+    UIImageView *chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
+    chevron.translatesAutoresizingMaskIntoConstraints = NO;
+    chevron.tintColor = UIColor.tertiaryLabelColor;
+    chevron.contentMode = UIViewContentModeScaleAspectFit;
+    [card addSubview:chevron];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [card.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:12.0],
+        [card.trailingAnchor constraintEqualToAnchor:cell.contentView.trailingAnchor constant:-12.0],
+        [card.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:8.0],
+        [card.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-8.0],
+        [card.heightAnchor constraintGreaterThanOrEqualToConstant:118.0],
+
+        [glow.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14.0],
+        [glow.centerYAnchor constraintEqualToAnchor:card.centerYAnchor],
+        [glow.widthAnchor constraintEqualToConstant:96.0],
+        [glow.heightAnchor constraintEqualToConstant:76.0],
+
+        [previewTiles[0].leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:18.0],
+        [previewTiles[0].centerYAnchor constraintEqualToAnchor:card.centerYAnchor],
+        [previewTiles[0].widthAnchor constraintEqualToConstant:44.0],
+        [previewTiles[0].heightAnchor constraintEqualToConstant:72.0],
+        [previewTiles[1].leadingAnchor constraintEqualToAnchor:previewTiles[0].leadingAnchor constant:28.0],
+        [previewTiles[1].centerYAnchor constraintEqualToAnchor:previewTiles[0].centerYAnchor constant:-7.0],
+        [previewTiles[1].widthAnchor constraintEqualToAnchor:previewTiles[0].widthAnchor],
+        [previewTiles[1].heightAnchor constraintEqualToAnchor:previewTiles[0].heightAnchor],
+        [previewTiles[2].leadingAnchor constraintEqualToAnchor:previewTiles[0].leadingAnchor constant:50.0],
+        [previewTiles[2].centerYAnchor constraintEqualToAnchor:previewTiles[0].centerYAnchor constant:8.0],
+        [previewTiles[2].widthAnchor constraintEqualToAnchor:previewTiles[0].widthAnchor],
+        [previewTiles[2].heightAnchor constraintEqualToAnchor:previewTiles[0].heightAnchor],
+
+        [chevron.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-16.0],
+        [chevron.centerYAnchor constraintEqualToAnchor:card.centerYAnchor],
+        [chevron.widthAnchor constraintEqualToConstant:12.0],
+        [chevron.heightAnchor constraintEqualToConstant:18.0],
+
+        [title.leadingAnchor constraintEqualToAnchor:glow.trailingAnchor constant:18.0],
+        [title.trailingAnchor constraintLessThanOrEqualToAnchor:chevron.leadingAnchor constant:-12.0],
+        [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:18.0],
+
+        [subtitle.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [subtitle.trailingAnchor constraintLessThanOrEqualToAnchor:chevron.leadingAnchor constant:-12.0],
+        [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:5.0],
+
+        [pill.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [pill.topAnchor constraintEqualToAnchor:subtitle.bottomAnchor constant:9.0],
+        [pill.bottomAnchor constraintLessThanOrEqualToAnchor:card.bottomAnchor constant:-16.0],
+    ]];
+
+    return cell;
+}
+
+- (UITableViewCell *)buildSnowBoardLiteCardCellInTableView:(UITableView *)tableView
+                                                       row:(NSDictionary *)row
+                                                 indexPath:(NSIndexPath *)indexPath
+{
+    NSString *kind = row[@"kind"] ?: @"";
+    if ([kind isEqualToString:@"sbl-online-entry"]) {
+        return [self buildSnowBoardLiteOnlineEntryCellInTableView:tableView
+                                                              row:row
+                                                        indexPath:indexPath];
+    }
+    if ([kind isEqualToString:@"sbl-carousel"]) {
+        return [self buildSnowBoardLiteCarouselCellInTableView:tableView
+                                                           row:row
+                                                     indexPath:indexPath];
+    }
+    if ([kind isEqualToString:@"sbl-online"]) {
+        return [self buildSnowBoardLiteOnlineDownloadsCellInTableView:tableView
+                                                                  row:row
+                                                            indexPath:indexPath];
+    }
+    if ([kind isEqualToString:@"sbl-help"]) {
+        return [self buildSnowBoardLiteHelpCellInTableView:tableView
+                                                       row:row
+                                                 indexPath:indexPath];
+    }
+    if ([kind isEqualToString:@"sbl-theme"]) {
+        return [self buildSnowBoardLiteThemeCardCellInTableView:tableView
+                                                            row:row
+                                                      indexPath:indexPath];
+    }
+
+    BOOL hero = [kind isEqualToString:@"sbl-hero"];
+    BOOL section = [kind isEqualToString:@"sbl-section"];
+    BOOL selected = [row[@"selected"] boolValue];
+    BOOL destructive = [row[@"destructive"] boolValue];
+
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"sbl-card"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                      reuseIdentifier:@"sbl-card"];
+    }
+    (void)indexPath;
+    cell.backgroundColor = UIColor.clearColor;
+    cell.contentView.backgroundColor = UIColor.clearColor;
+    cell.separatorInset = UIEdgeInsetsMake(0, CGRectGetWidth(tableView.bounds), 0, 0);
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.accessoryView = nil;
+    cell.selectionStyle = (hero || section)
+        ? UITableViewCellSelectionStyleNone
+        : UITableViewCellSelectionStyleDefault;
+    cell.userInteractionEnabled = !hero && !section;
+    for (UIView *v in [cell.contentView.subviews copy]) [v removeFromSuperview];
+
+    UIColor *accent = [self snowBoardLiteAccentColorNamed:row[@"color"] ?: @"mint"];
+    NSString *symbol = row[@"icon"] ?: @"square.stack.3d.up.fill";
+
+    UIView *card = [[UIView alloc] init];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.layer.cornerRadius = hero ? 26.0 : 20.0;
+    card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.layer.borderWidth = 1.0;
+    card.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.18].CGColor;
+    card.backgroundColor = hero
+        ? [accent colorWithAlphaComponent:0.16]
+        : UIColor.secondarySystemGroupedBackgroundColor;
+    [cell.contentView addSubview:card];
+
+    UIView *stripe = [[UIView alloc] init];
+    stripe.translatesAutoresizingMaskIntoConstraints = NO;
+    stripe.backgroundColor = accent;
+    stripe.layer.cornerRadius = 3.0;
+    stripe.layer.cornerCurve = kCACornerCurveContinuous;
+    [card addSubview:stripe];
+
+    UIView *iconPlate = [[UIView alloc] init];
+    iconPlate.translatesAutoresizingMaskIntoConstraints = NO;
+    iconPlate.backgroundColor = [accent colorWithAlphaComponent:hero ? 0.22 : 0.14];
+    iconPlate.layer.cornerRadius = hero ? 19.0 : 16.0;
+    iconPlate.layer.cornerCurve = kCACornerCurveContinuous;
+    [card addSubview:iconPlate];
+
+    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:symbol]];
+    icon.translatesAutoresizingMaskIntoConstraints = NO;
+    icon.tintColor = destructive ? UIColor.systemRedColor : accent;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    [iconPlate addSubview:icon];
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = row[@"title"] ?: @"";
+    title.textColor = destructive ? UIColor.systemRedColor : UIColor.labelColor;
+    title.font = hero
+        ? [UIFont systemFontOfSize:22.0 weight:UIFontWeightBold]
+        : [UIFont systemFontOfSize:16.5 weight:UIFontWeightSemibold];
+    title.numberOfLines = hero ? 2 : 1;
+    [card addSubview:title];
+
+    UILabel *subtitle = [[UILabel alloc] init];
+    subtitle.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitle.text = row[@"subtitle"] ?: @"";
+    subtitle.textColor = destructive
+        ? [UIColor.systemRedColor colorWithAlphaComponent:0.78]
+        : UIColor.secondaryLabelColor;
+    subtitle.font = [UIFont systemFontOfSize:hero ? 13.5 : 12.8 weight:UIFontWeightMedium];
+    subtitle.numberOfLines = hero ? 3 : 2;
+    [card addSubview:subtitle];
+
+    UIImageView *chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:selected ? @"checkmark.circle.fill" : @"chevron.right"]];
+    chevron.translatesAutoresizingMaskIntoConstraints = NO;
+    chevron.tintColor = selected ? accent : UIColor.tertiaryLabelColor;
+    chevron.contentMode = UIViewContentModeScaleAspectFit;
+    chevron.hidden = hero || section;
+    [card addSubview:chevron];
+
+    UILabel *kicker = nil;
+    if (hero || section) {
+        kicker = [[UILabel alloc] init];
+        kicker.translatesAutoresizingMaskIntoConstraints = NO;
+        NSString *kickerText = hero ? @"SNOWBOARD LITE" : @"LIBRARY";
+        kicker.attributedText = [[NSAttributedString alloc]
+            initWithString:kickerText
+                attributes:@{NSKernAttributeName: @0.8}];
+        kicker.textColor = [accent colorWithAlphaComponent:0.95];
+        kicker.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightHeavy];
+        [card addSubview:kicker];
+    }
+
+    UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
+    CGFloat top = hero ? 8.0 : 5.0;
+    CGFloat bottom = hero ? -10.0 : -5.0;
+    CGFloat cardPadding = hero ? 18.0 : 15.0;
+    CGFloat iconSize = hero ? 54.0 : 44.0;
+    [NSLayoutConstraint activateConstraints:@[
+        [card.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+        [card.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+        [card.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:top],
+        [card.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:bottom],
+
+        [stripe.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:0.0],
+        [stripe.topAnchor constraintEqualToAnchor:card.topAnchor constant:14.0],
+        [stripe.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-14.0],
+        [stripe.widthAnchor constraintEqualToConstant:5.0],
+
+        [iconPlate.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:cardPadding],
+        [iconPlate.topAnchor constraintEqualToAnchor:card.topAnchor constant:cardPadding],
+        [iconPlate.widthAnchor constraintEqualToConstant:iconSize],
+        [iconPlate.heightAnchor constraintEqualToConstant:iconSize],
+
+        [icon.centerXAnchor constraintEqualToAnchor:iconPlate.centerXAnchor],
+        [icon.centerYAnchor constraintEqualToAnchor:iconPlate.centerYAnchor],
+        [icon.widthAnchor constraintEqualToConstant:hero ? 30.0 : 24.0],
+        [icon.heightAnchor constraintEqualToConstant:hero ? 30.0 : 24.0],
+
+        [chevron.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-cardPadding],
+        [chevron.centerYAnchor constraintEqualToAnchor:card.centerYAnchor],
+        [chevron.widthAnchor constraintEqualToConstant:22.0],
+        [chevron.heightAnchor constraintEqualToConstant:22.0],
+    ]];
+
+    UIView *textTrailing = (hero || section) ? card : chevron;
+    if (kicker) {
+        [NSLayoutConstraint activateConstraints:@[
+            [kicker.leadingAnchor constraintEqualToAnchor:iconPlate.trailingAnchor constant:14.0],
+            [kicker.trailingAnchor constraintEqualToAnchor:textTrailing.trailingAnchor constant:(hero || section) ? -cardPadding : -10.0],
+            [kicker.topAnchor constraintEqualToAnchor:card.topAnchor constant:cardPadding],
+            [title.leadingAnchor constraintEqualToAnchor:kicker.leadingAnchor],
+            [title.trailingAnchor constraintEqualToAnchor:kicker.trailingAnchor],
+            [title.topAnchor constraintEqualToAnchor:kicker.bottomAnchor constant:5.0],
+        ]];
+    } else {
+        [NSLayoutConstraint activateConstraints:@[
+            [title.leadingAnchor constraintEqualToAnchor:iconPlate.trailingAnchor constant:14.0],
+            [title.trailingAnchor constraintEqualToAnchor:textTrailing.leadingAnchor constant:-10.0],
+            [title.topAnchor constraintEqualToAnchor:card.topAnchor constant:cardPadding],
+        ]];
+    }
+
+    [NSLayoutConstraint activateConstraints:@[
+        [subtitle.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [subtitle.trailingAnchor constraintEqualToAnchor:title.trailingAnchor],
+        [subtitle.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:4.0],
+        [subtitle.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-cardPadding],
+        [iconPlate.bottomAnchor constraintLessThanOrEqualToAnchor:card.bottomAnchor constant:-cardPadding],
+    ]];
+
+    if (section) {
+        card.backgroundColor = [accent colorWithAlphaComponent:0.10];
+        cell.userInteractionEnabled = NO;
+    }
+
+    return cell;
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
@@ -9678,6 +12141,12 @@ void cyanide_present_contact(UIViewController *host)
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     BOOL supported = settings_device_supported();
 
+    if ([kind hasPrefix:@"sbl-"]) {
+        return [self buildSnowBoardLiteCardCellInTableView:tableView
+                                                       row:row
+                                                 indexPath:dequeuePath];
+    }
+
     if ([kind isEqualToString:@"info"]) {
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"info"];
         if (!cell) {
@@ -9708,7 +12177,8 @@ void cyanide_present_contact(UIViewController *host)
     if ([kind isEqualToString:@"button"]) {
         BOOL rowSupported = supported ||
                             indexPath.section == SectionOTA ||
-                            indexPath.section == SectionThemer;
+                            indexPath.section == SectionThemer ||
+                            indexPath.section == SectionSnowBoardLite;
         NSString *action = row[@"action"];
         if (indexPath.section == SectionLiveWP &&
             ([action isEqualToString:@"livewp-select-video"] ||
@@ -10235,6 +12705,38 @@ void cyanide_present_contact(UIViewController *host)
     }
 }
 
+- (UISwipeActionsConfiguration *)tableView:(UITableView *)tableView
+trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
+{
+    if (!self.detailMode || self.underlyingSection != SectionSnowBoardLite) return nil;
+
+    NSArray<NSDictionary *> *rows = [self rowsForSection:SectionSnowBoardLite];
+    if (indexPath.row >= (NSInteger)rows.count) return nil;
+    NSDictionary *row = rows[indexPath.row];
+    if (![row[@"kind"] isEqualToString:@"sbl-theme"]) return nil;
+
+    NSString *themeID = row[@"id"] ?: @"";
+    if (themeID.length == 0) return nil;
+
+    UIContextualAction *remove = [UIContextualAction
+        contextualActionWithStyle:UIContextualActionStyleDestructive
+                            title:@"Remove"
+                          handler:^(__kindof UIContextualAction *action,
+                                    __kindof UIView *sourceView,
+                                    void (^completionHandler)(BOOL)) {
+        (void)action;
+        (void)sourceView;
+        [self removeSnowBoardLiteThemeID:themeID];
+        completionHandler(YES);
+    }];
+    remove.image = [UIImage systemImageNamed:@"trash"];
+
+    UISwipeActionsConfiguration *cfg = [UISwipeActionsConfiguration
+        configurationWithActions:@[remove]];
+    cfg.performsFirstActionWithFullSwipe = NO;
+    return cfg;
+}
+
 - (void)powercuffSegChanged:(UISegmentedControl *)sender
 {
     if (!settings_device_supported()) {
@@ -10513,7 +13015,8 @@ void cyanide_present_contact(UIViewController *host)
     if (!settings_device_supported() &&
         indexPath.section != SectionWarning &&
         indexPath.section != SectionOTA &&
-        indexPath.section != SectionThemer) {
+        indexPath.section != SectionThemer &&
+        indexPath.section != SectionSnowBoardLite) {
         printf("[SETTINGS] tap blocked: %s\n", settings_unsupported_message().UTF8String);
         return;
     }
@@ -10885,6 +13388,38 @@ void cyanide_present_contact(UIViewController *host)
             [self presentThemerFormatGuide];
         } else if ([action isEqualToString:@"themer-clear"]) {
             [self clearSelectedTheme];
+        }
+        return;
+    }
+
+    if (indexPath.section == SectionSnowBoardLite) {
+        NSDictionary *row = [self rowsForSection:indexPath.section][indexPath.row];
+        NSString *kind = row[@"kind"];
+        if ([kind isEqualToString:@"sbl-theme"]) {
+            [self selectSnowBoardLiteThemeID:row[@"id"]];
+            return;
+        }
+        if ([kind isEqualToString:@"sbl-online-entry"]) {
+            [self presentSnowBoardLiteOnlineDownloads];
+            return;
+        }
+        if (![kind isEqualToString:@"button"] &&
+            ![kind isEqualToString:@"sbl-action"]) return;
+        NSString *action = row[@"action"];
+        if ([action isEqualToString:@"sbl-import"]) {
+            [self presentSnowBoardLiteImporter];
+        } else if ([action isEqualToString:@"sbl-select-ios6"]) {
+            [self selectSnowBoardLiteBuiltinIOS6Theme];
+        } else if ([action isEqualToString:@"sbl-import-url"]) {
+            [self promptSnowBoardLiteThemeURL];
+        } else if ([action isEqualToString:@"sbl-online"]) {
+            [self presentSnowBoardLiteOnlineDownloads];
+        } else if ([action isEqualToString:@"sbl-guide"]) {
+            [self presentSnowBoardLiteFormatGuide];
+        } else if ([action isEqualToString:@"sbl-clear"]) {
+            [self clearSnowBoardLiteSelectedTheme];
+        } else if ([action isEqualToString:@"sbl-remove"]) {
+            [self presentSnowBoardLiteRemoveThemePicker];
         }
         return;
     }

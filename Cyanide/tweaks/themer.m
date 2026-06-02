@@ -6,6 +6,7 @@
 #import "themer.h"
 #import "remote_objc.h"
 #import "sb_walk.h"
+#import "../map_app.h"
 #import "../TaskRop/RemoteCall.h"
 #import "../LogTextView.h"
 
@@ -66,6 +67,224 @@ static int themer_host_ios_major(void)
     NSOperatingSystemVersion v = [[NSProcessInfo processInfo] operatingSystemVersion];
     gThemerHostIOSMajor = (int)v.majorVersion;
     return gThemerHostIOSMajor;
+}
+
+static NSArray<NSString *> *themer_priority_theme_bundles(void)
+{
+    static NSArray<NSString *> *bundles = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        bundles = @[
+            @"com.apple.AppStore",
+            @"com.apple.DocumentsApp",
+            @"com.apple.Health",
+            @"com.apple.Home",
+            @"com.apple.Maps",
+            @"com.apple.MobileAddressBook",
+            @"com.apple.MobileSMS",
+            @"com.apple.Music",
+            @"com.apple.Passbook",
+            @"com.apple.Preferences",
+            @"com.apple.Translate",
+            @"com.apple.VoiceMemos",
+            @"com.apple.calculator",
+            @"com.apple.camera",
+            @"com.apple.findmy",
+            @"com.apple.freeform",
+            @"com.apple.iBooks",
+            @"com.apple.mobilecal",
+            @"com.apple.mobilemail",
+            @"com.apple.mobilenotes",
+            @"com.apple.mobilephone",
+            @"com.apple.mobilesafari",
+            @"com.apple.mobileslideshow",
+            @"com.apple.mobiletimer",
+            @"com.apple.podcasts",
+            @"com.apple.reminders",
+            @"com.apple.shortcuts",
+            @"com.apple.stocks",
+            @"com.apple.weather",
+            @"com.alipay.iphoneclient",
+            @"com.taobao.taobao4iphone",
+            @"com.autonavi.minimap",
+            @"com.360buy.jdmobile",
+            @"com.jd.jrapp",
+            @"com.taobao.fleamarket",
+            @"com.tmall.wireless",
+            @"com.alibaba.wireless",
+            @"com.cainiao.Cainiao4iPhone",
+            @"com.hpbr.bosszhipin",
+            @"com.xingin.discover",
+            @"com.sina.weibo",
+            @"com.zhihu.ios",
+            @"com.baidu.searchbox",
+            @"com.baidu.map",
+            @"com.baidu.netdisk",
+            @"com.baidu.tieba",
+            @"com.xiaojukeji.didi",
+            @"ctrip.com",
+            @"com.qunar.iphoneclient",
+            @"com.meituan.imeituan",
+            @"com.meituan.waimai",
+            @"com.dianping.dpscope",
+            @"me.ele.ios.eleme",
+            @"com.netease.cloudmusic",
+            @"com.qiyi.iphone",
+            @"com.youku.YouKu",
+            @"com.tencent.live4iphone",
+            @"com.tencent.map",
+            @"com.tencent.mttlite",
+            @"com.tencent.QQMusic",
+            @"com.tencent.qqmail",
+            @"com.tencent.karaoke",
+            @"com.laiwang.DingTalk",
+            @"com.tencent.ww",
+            @"com.larksuite.Lark",
+            @"com.kingsoft.wpsoffice",
+            @"com.xunlei.download",
+            @"cmb.pb",
+            @"com.icbc.iphoneclient",
+            @"com.ccb.ccbMobileBank",
+            @"com.abchina.iphone.abchina",
+            @"com.bocmbci.bocmbci",
+            @"cn.com.spdb.mobilebank.per",
+            @"com.ecitic.bank.mobile",
+            @"com.pingan.paces.ccms",
+            @"com.pingan.pabank",
+            @"com.google.ios.youtube",
+            @"com.ss.iphone.ugc.Aweme",
+            @"com.kuaishou.gifmaker",
+            @"tv.danmaku.biliblue",
+            @"tv.danmaku.bilianime",
+            @"com.tencent.xin",
+            @"com.tencent.mqq",
+            @"com.xunmeng.pinduoduo",
+            @"com.github.stormbreaker.prod",
+            @"com.liguangming.Shadowrocket",
+            @"com.atebits.Tweetie2",
+            @"com.autonavi.amap",
+        ];
+    });
+    return bundles;
+}
+
+static NSArray<NSString *> *themer_debug_watch_bundles(void)
+{
+    static NSArray<NSString *> *bundles = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        bundles = @[
+            @"com.apple.AppStore",
+            @"com.apple.MobileSMS",
+            @"com.apple.Maps",
+            @"com.apple.MobileAddressBook",
+            @"com.apple.mobilephone",
+            @"com.apple.mobilesafari",
+            @"com.apple.camera",
+            @"com.apple.mobiletimer",
+            @"com.autonavi.minimap",
+            @"com.autonavi.amap",
+            @"com.360buy.jdmobile",
+            @"com.taobao.fleamarket",
+            @"com.hpbr.bosszhipin",
+            @"com.tencent.mqq",
+            @"com.tencent.mobileqq",
+        ];
+    });
+    return bundles;
+}
+
+static BOOL themer_is_debug_watch_bundle(NSString *bundle)
+{
+    if (![bundle isKindOfClass:NSString.class] || bundle.length == 0) return NO;
+    NSString *lower = bundle.lowercaseString;
+    for (NSString *watch in themer_debug_watch_bundles()) {
+        if ([lower isEqualToString:watch.lowercaseString]) return YES;
+    }
+    return NO;
+}
+
+static NSString *themer_join_strings_for_log(id strings, NSUInteger limit)
+{
+    if (![strings respondsToSelector:@selector(allObjects)] &&
+        ![strings respondsToSelector:@selector(countByEnumeratingWithState:objects:count:)]) {
+        return @"";
+    }
+
+    NSArray *raw = [strings respondsToSelector:@selector(allObjects)]
+        ? [strings allObjects]
+        : (NSArray *)strings;
+    NSMutableArray<NSString *> *items = [NSMutableArray array];
+    for (id obj in raw) {
+        if (![obj isKindOfClass:NSString.class] || [obj length] == 0) continue;
+        [items addObject:obj];
+    }
+    [items sortUsingSelector:@selector(compare:)];
+
+    NSUInteger total = items.count;
+    if (limit > 0 && items.count > limit) {
+        items = [[items subarrayWithRange:NSMakeRange(0, limit)] mutableCopy];
+        [items addObject:[NSString stringWithFormat:@"...(+%lu)", (unsigned long)(total - limit)]];
+    }
+    return [items componentsJoinedByString:@","];
+}
+
+static NSString *themer_theme_path_for_bundle(NSDictionary<NSString *, NSString *> *pathByBundle,
+                                              NSString *bundle)
+{
+    if (![bundle isKindOfClass:NSString.class] || bundle.length == 0) return nil;
+    NSString *path = pathByBundle[bundle];
+    if (!path) path = pathByBundle[bundle.lowercaseString];
+    return path;
+}
+
+static void themer_log_installed_application_bundles_once(void)
+{
+    // allApplications can block SpringBoard under this RemoteCall path.
+    static const bool kThemerInstalledBundleSnapshotEnabled = false;
+    if (!kThemerInstalledBundleSnapshotEnabled) return;
+
+    static bool logged = false;
+    if (logged) return;
+    logged = true;
+
+    uint64_t SBAC = r_class("SBApplicationController");
+    uint64_t controller = (r_is_objc_ptr(SBAC) && r_responds(SBAC, "sharedInstance"))
+        ? r_msg2_main(SBAC, "sharedInstance", 0, 0, 0, 0) : 0;
+    if (!r_is_objc_ptr(controller) || !r_responds_main(controller, "allApplications")) {
+        printf("[THEMER] installed bundles unavailable controller=0x%llx\n",
+               (unsigned long long)controller);
+        return;
+    }
+
+    uint64_t apps = r_msg2_main(controller, "allApplications", 0, 0, 0, 0);
+    if (!r_is_objc_ptr(apps) || !r_responds_main(apps, "count")) {
+        printf("[THEMER] installed bundles unavailable apps=0x%llx\n",
+               (unsigned long long)apps);
+        return;
+    }
+
+    uint64_t count = r_msg2_main(apps, "count", 0, 0, 0, 0);
+    if (count > 512) {
+        printf("[THEMER] installed bundles absurd count=%llu\n",
+               (unsigned long long)count);
+        return;
+    }
+
+    NSMutableArray<NSString *> *bundles = [NSMutableArray array];
+    for (uint64_t i = 0; i < count; i++) {
+        uint64_t app = r_msg2_main(apps, "objectAtIndex:", i, 0, 0, 0);
+        if (!r_is_objc_ptr(app) || !r_responds_main(app, "bundleIdentifier")) continue;
+        uint64_t bid = r_msg2_main(app, "bundleIdentifier", 0, 0, 0, 0);
+        char bidBuf[160] = {0};
+        if (r_is_objc_ptr(bid) && r_read_nsstring(bid, bidBuf, sizeof(bidBuf)) && bidBuf[0]) {
+            [bundles addObject:@(bidBuf)];
+        }
+    }
+
+    printf("[THEMER] installed bundles count=%lu list=%s\n",
+           (unsigned long)bundles.count,
+           themer_join_strings_for_log(bundles, 360).UTF8String);
 }
 
 static uint64_t themer_lookup_cached(const char *bundle)
@@ -690,6 +909,38 @@ static bool themer_needs_visible_push(const char *bundle)
     return major > 0 && major < 26;
 }
 
+static NSDictionary<NSString *, NSData *> *themer_normalized_theme_data(NSDictionary<NSString *, NSData *> *input)
+{
+    if (input.count == 0) return @{};
+
+    NSMutableDictionary<NSString *, NSData *> *out = [NSMutableDictionary dictionaryWithCapacity:input.count];
+    NSUInteger aliases = 0;
+    for (NSString *key in input) {
+        NSData *data = input[key];
+        if (![key isKindOfClass:NSString.class] ||
+            ![data isKindOfClass:NSData.class] ||
+            data.length == 0) {
+            continue;
+        }
+
+        BOOL usedAlias = NO;
+        NSString *mapped = CNDMappedIOSBundleIDForIconName(key, &usedAlias);
+        NSString *target = mapped.length > 0 ? mapped : key;
+        if (target.length > 0 && !out[target]) {
+            out[target] = data;
+            if (usedAlias) aliases++;
+        }
+    }
+
+    if (aliases > 0 || out.count != input.count) {
+        printf("[THEMER] normalized theme data entries=%lu -> %lu aliases=%lu\n",
+               (unsigned long)input.count,
+               (unsigned long)out.count,
+               (unsigned long)aliases);
+    }
+    return out;
+}
+
 static bool themer_clear_overlay_on_object(uint64_t obj, uint64_t key)
 {
     if (!r_is_objc_ptr(obj) || !key) return false;
@@ -1142,6 +1393,31 @@ static bool themer_graft_icon_model(uint64_t icon, uint64_t image,
     }
 
     return true;
+}
+
+static int themer_notify_icon_image_changed(uint64_t icon)
+{
+    if (!r_is_objc_ptr(icon)) return 0;
+
+    int called = 0;
+    static const char *selectors[] = {
+        "purgeCachedImages",
+        "clearCachedImages",
+        "invalidateIconImageCache",
+        "_invalidateIconImageCache",
+        "reloadIconImage",
+        "_reloadIconImage",
+        "noteIconImageDidChange",
+        "_noteIconImageDidChange",
+    };
+
+    for (size_t i = 0; i < sizeof(selectors) / sizeof(selectors[0]); i++) {
+        const char *sel = selectors[i];
+        if (!r_responds_main(icon, sel)) continue;
+        r_msg2_main(icon, sel, 0, 0, 0, 0);
+        called++;
+    }
+    return called;
 }
 
 // Resolve the bundle identifier for an app SBIconView/SBIcon.
@@ -1860,6 +2136,11 @@ static int themer_graft_icon_models_for_theme(NSDictionary<NSString *, NSData *>
             NSData *uploadBytes = themer_rounded_png_data(pngBytes, bundle);
             image = themer_build_remote_uiimage_from_data(uploadBytes ?: pngBytes, bundle);
             if (!image) {
+                if (themer_is_debug_watch_bundle(key)) {
+                    printf("[THEMER] watch model image-fail bundle=%s bytes=%lu\n",
+                           bundle,
+                           (unsigned long)pngBytes.length);
+                }
                 modelMisses++;
                 continue;
             }
@@ -1868,18 +2149,41 @@ static int themer_graft_icon_models_for_theme(NSDictionary<NSString *, NSData *>
 
         uint64_t icon = themer_lookup_model_icon_for_bundle(bundle);
         if (!r_is_objc_ptr(icon)) {
+            if (themer_is_debug_watch_bundle(key)) {
+                printf("[THEMER] watch model miss bundle=%s image=0x%llx bytes=%lu\n",
+                       bundle,
+                       (unsigned long long)image,
+                       (unsigned long)pngBytes.length);
+            }
             modelMisses++;
             continue;
         }
 
         ThemerEntry *entry = themer_lookup_entry(bundle);
+        int seeded = -1;
         if (entry && !entry->iconServicesSeeded) {
-            entry->iconServicesSeeded =
-                themer_seed_iconservices_cache(bundle, image, 60.0) > 0;
+            seeded = themer_seed_iconservices_cache(bundle, image, 60.0);
+            entry->iconServicesSeeded = seeded > 0;
+        } else if (entry && entry->iconServicesSeeded) {
+            seeded = 1;
         }
 
         bool changed = false;
-        if (entry && themer_graft_icon_model(icon, image, entry, 0, &changed)) {
+        bool graftOK = entry && themer_graft_icon_model(icon, image, entry, 0, &changed);
+        int notifyCount = graftOK ? themer_notify_icon_image_changed(icon) : 0;
+        if (themer_is_debug_watch_bundle(key)) {
+            printf("[THEMER] watch model bundle=%s image=0x%llx icon=0x%llx entry=%d seeded=%d graft=%d changed=%d notify=%d bytes=%lu\n",
+                   bundle,
+                   (unsigned long long)image,
+                   (unsigned long long)icon,
+                   entry ? 1 : 0,
+                   seeded,
+                   graftOK ? 1 : 0,
+                   changed ? 1 : 0,
+                   notifyCount,
+                   (unsigned long)pngBytes.length);
+        }
+        if (graftOK) {
             grafted++;
         } else {
             modelMisses++;
@@ -2026,14 +2330,22 @@ bool themer_apply_data_in_session(NSDictionary<NSString *, NSData *> *imageDataB
         printf("[THEMER] apply data: empty dictionary\n");
         return false;
     }
+    imageDataByBundle = themer_normalized_theme_data(imageDataByBundle);
     printf("[THEMER] apply data entries=%lu cacheCarried=%d\n",
            (unsigned long)imageDataByBundle.count, gThemerCacheCount);
+    NSMutableArray<NSString *> *watchParts = [NSMutableArray array];
+    for (NSString *bid in themer_debug_watch_bundles()) {
+        BOOL present = imageDataByBundle[bid] || imageDataByBundle[bid.lowercaseString];
+        [watchParts addObject:[NSString stringWithFormat:@"%@=%d", bid, present]];
+    }
+    printf("[THEMER] watch data %s\n", [watchParts componentsJoinedByString:@","].UTF8String);
     if (!gThemerVisiblePolicyLogged) {
         gThemerVisiblePolicyLogged = true;
         printf("[THEMER] visible push policy iosMajor=%d legacyVisible=%d\n",
                themer_host_ios_major(),
                themer_needs_visible_push(NULL));
     }
+    themer_log_installed_application_bundles_once();
 
     // Drop the per-msgSend settle for the duration of the apply. The stable
     // RemoteCall trampoline already serializes the calls; sleeping before every
@@ -2099,27 +2411,129 @@ bool themer_apply_in_session(const char *themePath)
 
     NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:themeDir error:NULL];
     NSMutableDictionary<NSString *, NSString *> *pathByBundle = [NSMutableDictionary dictionary];
+    NSMutableSet<NSString *> *appleSystemBundles = [NSMutableSet set];
+    NSMutableSet<NSString *> *aliasTargetBundles = [NSMutableSet set];
+    NSUInteger availableCount = 0;
+    NSUInteger aliasKeyCount = 0;
     for (NSString *f in files) {
         if (![f.pathExtension.lowercaseString isEqualToString:@"png"]) continue;
-        pathByBundle[f.stringByDeletingPathExtension] =
-            [themeDir stringByAppendingPathComponent:f];
+        availableCount++;
+        NSString *bundle = f.stringByDeletingPathExtension;
+        NSString *path = [themeDir stringByAppendingPathComponent:f];
+        pathByBundle[bundle] = path;
+        if ([bundle.lowercaseString hasPrefix:@"com.apple."]) {
+            [appleSystemBundles addObject:bundle];
+        }
+        NSString *lower = bundle.lowercaseString;
+        if (lower.length > 0 && !pathByBundle[lower]) {
+            pathByBundle[lower] = path;
+        }
+        if ([lower isEqualToString:@"com.autonavi.minimap"] && !pathByBundle[@"com.autonavi.amap"]) {
+            pathByBundle[@"com.autonavi.amap"] = path;
+            [aliasTargetBundles addObject:@"com.autonavi.amap"];
+        }
+        BOOL usedAlias = NO;
+        NSString *mapped = CNDMappedIOSBundleIDForIconName(f, &usedAlias);
+        if (mapped.length > 0) {
+            if ([mapped.lowercaseString hasPrefix:@"com.apple."]) {
+                [appleSystemBundles addObject:mapped];
+            }
+            if (!pathByBundle[mapped]) {
+                pathByBundle[mapped] = path;
+                if (usedAlias) aliasKeyCount++;
+            }
+            if (usedAlias) {
+                [aliasTargetBundles addObject:mapped];
+            }
+            NSString *mappedLower = mapped.lowercaseString;
+            if (mappedLower.length > 0 && !pathByBundle[mappedLower]) {
+                pathByBundle[mappedLower] = path;
+            }
+        }
     }
-    printf("[THEMER] apply path=%s available=%lu\n",
-           themePath, (unsigned long)pathByBundle.count);
-    if (pathByBundle.count == 0) return false;
+    printf("[THEMER] apply path=%s available=%lu aliasKeys=%lu\n",
+           themePath, (unsigned long)availableCount, (unsigned long)aliasKeyCount);
+    if (availableCount == 0) return false;
+
+    NSMutableArray<NSString *> *watchParts = [NSMutableArray array];
+    for (NSString *bid in themer_debug_watch_bundles()) {
+        NSString *path = themer_theme_path_for_bundle(pathByBundle, bid);
+        NSString *name = path.length > 0 ? path.lastPathComponent : @"-";
+        [watchParts addObject:[NSString stringWithFormat:@"%@=%d(%@)",
+                               bid,
+                               path.length > 0,
+                               name]];
+    }
+    printf("[THEMER] watch paths %s\n", [watchParts componentsJoinedByString:@","].UTF8String);
 
     NSSet<NSString *> *visible = themer_collect_visible_bundles();
+    printf("[THEMER] visible bundles count=%lu list=%s\n",
+           (unsigned long)visible.count,
+           themer_join_strings_for_log(visible, 160).UTF8String);
+    printf("[THEMER] apple-system bundles count=%lu list=%s\n",
+           (unsigned long)appleSystemBundles.count,
+           themer_join_strings_for_log(appleSystemBundles, 200).UTF8String);
+    printf("[THEMER] alias-target bundles count=%lu list=%s\n",
+           (unsigned long)aliasTargetBundles.count,
+           themer_join_strings_for_log(aliasTargetBundles, 240).UTF8String);
+    NSMutableSet<NSString *> *targetBundles = [visible mutableCopy];
+    NSUInteger priorityAdded = 0;
+    NSUInteger appleAdded = 0;
+    NSUInteger aliasAdded = 0;
+    for (NSString *bid in appleSystemBundles) {
+        if (![bid isKindOfClass:NSString.class] || bid.length == 0) continue;
+        if ([targetBundles containsObject:bid]) continue;
+        if (themer_theme_path_for_bundle(pathByBundle, bid)) {
+            [targetBundles addObject:bid];
+            appleAdded++;
+        }
+    }
+    for (NSString *bid in aliasTargetBundles) {
+        if (![bid isKindOfClass:NSString.class] || bid.length == 0) continue;
+        if ([targetBundles containsObject:bid]) continue;
+        if (themer_theme_path_for_bundle(pathByBundle, bid)) {
+            [targetBundles addObject:bid];
+            aliasAdded++;
+        }
+    }
+    for (NSString *bid in themer_priority_theme_bundles()) {
+        if (![bid isKindOfClass:NSString.class] || bid.length == 0) continue;
+        if ([targetBundles containsObject:bid]) continue;
+        if (themer_theme_path_for_bundle(pathByBundle, bid)) {
+            [targetBundles addObject:bid];
+            priorityAdded++;
+        }
+    }
+    printf("[THEMER] target bundles count=%lu list=%s\n",
+           (unsigned long)targetBundles.count,
+           themer_join_strings_for_log(targetBundles, 240).UTF8String);
     NSMutableDictionary<NSString *, NSData *> *dict = [NSMutableDictionary dictionary];
-    for (NSString *bid in visible) {
-        NSString *path = pathByBundle[bid];
+    NSMutableArray<NSString *> *matchedBundles = [NSMutableArray array];
+    NSUInteger caseFallbacks = 0;
+    for (NSString *bid in targetBundles) {
+        NSString *path = themer_theme_path_for_bundle(pathByBundle, bid);
+        if (path && !pathByBundle[bid]) {
+            if (path) caseFallbacks++;
+        }
         if (!path) continue;
         NSData *bytes = [NSData dataWithContentsOfFile:path];
-        if (bytes.length) dict[bid] = bytes;
+        if (bytes.length) {
+            dict[bid] = bytes;
+            [matchedBundles addObject:bid];
+        }
     }
-    printf("[THEMER] apply loaded=%lu matched of %lu visible, %lu available\n",
+    printf("[THEMER] matched bundles count=%lu list=%s\n",
+           (unsigned long)matchedBundles.count,
+           themer_join_strings_for_log(matchedBundles, 240).UTF8String);
+    printf("[THEMER] apply loaded=%lu matched of %lu target (%lu visible + %lu apple + %lu alias + %lu priority), %lu available caseFallbacks=%lu\n",
            (unsigned long)dict.count,
+           (unsigned long)targetBundles.count,
            (unsigned long)visible.count,
-           (unsigned long)pathByBundle.count);
+           (unsigned long)appleAdded,
+           (unsigned long)aliasAdded,
+           (unsigned long)priorityAdded,
+           (unsigned long)availableCount,
+           (unsigned long)caseFallbacks);
     return themer_apply_data_in_session(dict);
 }
 
