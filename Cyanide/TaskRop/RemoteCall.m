@@ -574,6 +574,11 @@ bool remote_call_current_success(void)
     return g_RC_success;
 }
 
+int remote_call_current_pid(void)
+{
+    return g_RC_pid;
+}
+
 int remote_call_set_stable_timeout_floor_ms(int timeoutMS)
 {
     int previous = g_RC_stableExceptionTimeoutFloorMS > 0 ? g_RC_stableExceptionTimeoutFloorMS : 10000;

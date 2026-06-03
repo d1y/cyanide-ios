@@ -4,6 +4,7 @@
 
 #import "remote_objc.h"
 #import "../TaskRop/RemoteCall.h"
+#import <pthread.h>
 #import <stdlib.h>
 #import <string.h>
 #import <unistd.h>
@@ -11,6 +12,74 @@
 extern uint64_t remote_read64(uint64_t src);
 
 static useconds_t gSettleUS = 50000;
+
+#define R_OBJC_CACHE_CAP 192
+#define R_OBJC_CACHE_NAME_MAX 96
+
+typedef struct {
+    int pid;
+    char name[R_OBJC_CACHE_NAME_MAX];
+    uint64_t value;
+} RemoteObjCCacheEntry;
+
+static pthread_mutex_t gObjCCacheLock = PTHREAD_MUTEX_INITIALIZER;
+static RemoteObjCCacheEntry gSelCache[R_OBJC_CACHE_CAP];
+static RemoteObjCCacheEntry gClassCache[R_OBJC_CACHE_CAP];
+static int gSelCacheNext = 0;
+static int gClassCacheNext = 0;
+
+static bool r_cacheable_name(const char *name)
+{
+    return name && name[0] && strlen(name) < R_OBJC_CACHE_NAME_MAX;
+}
+
+static uint64_t r_cache_lookup(RemoteObjCCacheEntry *cache, int pid, const char *name)
+{
+    if (pid <= 0 || !r_cacheable_name(name)) return 0;
+
+    uint64_t value = 0;
+    pthread_mutex_lock(&gObjCCacheLock);
+    for (int i = 0; i < R_OBJC_CACHE_CAP; i++) {
+        if (cache[i].pid == pid && cache[i].value && strcmp(cache[i].name, name) == 0) {
+            value = cache[i].value;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&gObjCCacheLock);
+    return value;
+}
+
+static void r_cache_store(RemoteObjCCacheEntry *cache, int *nextSlot, int pid, const char *name, uint64_t value)
+{
+    if (pid <= 0 || !value || !r_cacheable_name(name)) return;
+
+    pthread_mutex_lock(&gObjCCacheLock);
+    for (int i = 0; i < R_OBJC_CACHE_CAP; i++) {
+        if (cache[i].pid == pid && strcmp(cache[i].name, name) == 0) {
+            cache[i].value = value;
+            pthread_mutex_unlock(&gObjCCacheLock);
+            return;
+        }
+    }
+
+    int slot = -1;
+    for (int i = 0; i < R_OBJC_CACHE_CAP; i++) {
+        if (cache[i].pid == 0 || cache[i].value == 0) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0) {
+        slot = *nextSlot;
+        *nextSlot = (*nextSlot + 1) % R_OBJC_CACHE_CAP;
+    }
+
+    cache[slot].pid = pid;
+    strncpy(cache[slot].name, name, sizeof(cache[slot].name) - 1);
+    cache[slot].name[sizeof(cache[slot].name) - 1] = '\0';
+    cache[slot].value = value;
+    pthread_mutex_unlock(&gObjCCacheLock);
+}
 
 static void r_settle(void)
 {
@@ -53,19 +122,29 @@ void r_free(uint64_t ptr)
 
 uint64_t r_sel(const char *name)
 {
+    int pid = remote_call_current_pid();
+    uint64_t cached = r_cache_lookup(gSelCache, pid, name);
+    if (cached) return cached;
+
     uint64_t s = r_alloc_str(name);
     if (!s) return 0;
     uint64_t sel = do_remote_call_stable(R_TIMEOUT, "sel_registerName", s, 0, 0, 0, 0, 0, 0, 0);
     r_free(s);
+    r_cache_store(gSelCache, &gSelCacheNext, pid, name, sel);
     return sel;
 }
 
 uint64_t r_class(const char *name)
 {
+    int pid = remote_call_current_pid();
+    uint64_t cached = r_cache_lookup(gClassCache, pid, name);
+    if (cached) return cached;
+
     uint64_t s = r_alloc_str(name);
     if (!s) return 0;
     uint64_t c = do_remote_call_stable(R_TIMEOUT, "objc_getClass", s, 0, 0, 0, 0, 0, 0, 0);
     r_free(s);
+    r_cache_store(gClassCache, &gClassCacheNext, pid, name, c);
     return c;
 }
 
