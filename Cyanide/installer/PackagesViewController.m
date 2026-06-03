@@ -135,7 +135,7 @@ static NSString * const kTipsExpandedDefault    = @"installer.tipsExpanded";
         @{ @"icon":  @"envelope.fill",
            @"color": UIColor.systemBlueColor,
            @"title": @"Need specific help?",
-           @"body":  @"Diagnostic log uploads are opt-in from Settings > About. Use the button below to reach me directly with your device info — tell me what you ran into." },
+           @"body":  @"Use Settings > About > Share Log to send a local diagnostic snapshot with your device info — tell me what you ran into." },
     ];
 }
 

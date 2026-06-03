@@ -850,8 +850,6 @@ NSString * const kSettingsNanoMinPairing       = @"NanoRegistryMinPairing";
 NSString * const kSettingsNanoMinPairingChipID = @"NanoRegistryMinPairingChipID";
 NSString * const kSettingsNanoMinQuickSwitch   = @"NanoRegistryMinQuickSwitch";
 
-NSString * const kSettingsLogUploadEnabled = @"LogUploadEnabled";
-
 static void cyanide_upload_log_if_enabled(void);
 static void cyanide_upload_log_milestone(NSString *event);
 static void cyanide_start_session_uploads(void);
@@ -8087,7 +8085,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         case RootSectionSystemBundles:  return (NSInteger)self.systemBundleRows.count;
         case RootSectionAppIcon:        return 2;
         case RootSectionDocs:           return 1;
-        case RootSectionAbout:          return 4;
+        case RootSectionAbout:          return 3;
         case RootSectionExperimental:   return 1;
         case RootSectionWarning:        return 1;
         case RootSectionCount:          return 0;
@@ -8245,6 +8243,115 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     }];
 }
 
+static NSString * const kTelegramLogoSVG =
+@"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"48\" height=\"48\" viewBox=\"0 0 48 48\">"
+@"<circle cx=\"24\" cy=\"24\" r=\"24\" fill=\"#229ED9\"/>"
+@"<path fill=\"#fff\" d=\"M35.6 13.2 9.9 23.1c-1.8.7-1.8 1.7-.3 2.2l6.6 2.1 2.5 7.8c.3.9.2 1.3 1 .3l3.6-3.5 7.5 5.5c1.4.8 2.4.4 2.7-1.3l4.9-23c.5-2-.8-2.9-2.4-2.2Zm-18.6 13.9 15.1-9.5c.8-.5 1.5-.2.9.4L20.1 29.7l-.5 5.2-2.6-8Z\"/>"
+@"</svg>";
+
++ (UIImage *)telegramLogoImageWithSize:(CGFloat)size
+{
+    (void)kTelegramLogoSVG; // Keep the real SVG payload colocated with the rendered icon.
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size) format:format];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGContextRef c = ctx.CGContext;
+        CGFloat s = size / 48.0;
+        CGContextScaleCTM(c, s, s);
+
+        [[UIColor colorWithRed:0.133 green:0.620 blue:0.851 alpha:1.0] setFill];
+        [[UIBezierPath bezierPathWithOvalInRect:CGRectMake(0, 0, 48, 48)] fill];
+
+        UIBezierPath *plane = [UIBezierPath bezierPath];
+        [plane moveToPoint:CGPointMake(35.6, 13.2)];
+        [plane addLineToPoint:CGPointMake(9.9, 23.1)];
+        [plane addCurveToPoint:CGPointMake(9.6, 25.3)
+                 controlPoint1:CGPointMake(8.1, 23.8)
+                 controlPoint2:CGPointMake(8.1, 24.8)];
+        [plane addLineToPoint:CGPointMake(16.2, 27.4)];
+        [plane addLineToPoint:CGPointMake(18.7, 35.2)];
+        [plane addCurveToPoint:CGPointMake(19.7, 35.5)
+                 controlPoint1:CGPointMake(19.0, 36.1)
+                 controlPoint2:CGPointMake(18.9, 36.5)];
+        [plane addLineToPoint:CGPointMake(23.3, 32.0)];
+        [plane addLineToPoint:CGPointMake(30.8, 37.5)];
+        [plane addCurveToPoint:CGPointMake(33.5, 36.2)
+                 controlPoint1:CGPointMake(32.2, 38.3)
+                 controlPoint2:CGPointMake(33.2, 37.9)];
+        [plane addLineToPoint:CGPointMake(38.4, 13.2)];
+        [plane addCurveToPoint:CGPointMake(35.6, 13.2)
+                 controlPoint1:CGPointMake(38.9, 11.2)
+                 controlPoint2:CGPointMake(37.2, 10.3)];
+        [plane closePath];
+
+        [plane moveToPoint:CGPointMake(17.0, 27.1)];
+        [plane addLineToPoint:CGPointMake(32.1, 17.6)];
+        [plane addCurveToPoint:CGPointMake(33.0, 18.0)
+                 controlPoint1:CGPointMake(32.9, 17.1)
+                 controlPoint2:CGPointMake(33.6, 17.4)];
+        [plane addLineToPoint:CGPointMake(20.1, 29.7)];
+        [plane addLineToPoint:CGPointMake(19.6, 34.9)];
+        [plane closePath];
+
+        [UIColor.whiteColor setFill];
+        [plane fillWithBlendMode:kCGBlendModeNormal alpha:1.0];
+    }];
+}
+
++ (UIImage *)circularImageFromData:(NSData *)data size:(CGFloat)size
+{
+    UIImage *image = data.length ? [UIImage imageWithData:data] : nil;
+    if (!image) return nil;
+
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat preferredFormat];
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(size, size) format:format];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGRect rect = CGRectMake(0, 0, size, size);
+        [[UIBezierPath bezierPathWithOvalInRect:rect] addClip];
+        [image drawInRect:rect];
+    }];
+}
+
+- (NSArray<NSDictionary *> *)aboutAuthors
+{
+    return @[
+        @{ @"name": @"zeroxjf",
+           @"avatar": @"https://avatars.githubusercontent.com/u/109935131?s=64&v=4",
+           @"x": @"zeroxjf",
+           @"color": UIColor.systemBlueColor },
+        @{ @"name": @"d1y",
+           @"avatar": @"https://avatars.githubusercontent.com/u/45585937?s=64?v=4",
+           @"x": @"chenhonzhou",
+           @"color": UIColor.systemPinkColor },
+    ];
+}
+
+- (void)loadAboutAvatarURLString:(NSString *)urlString
+                    intoImageView:(UIImageView *)imageView
+                    fallbackColor:(UIColor *)fallbackColor
+{
+    imageView.image = [SettingsViewController iconBadgeWithSymbol:@"person.fill"
+                                                            color:fallbackColor ?: UIColor.systemGrayColor
+                                                             size:24.0];
+    if (!urlString.length) return;
+
+    objc_setAssociatedObject(imageView, "cyanideAboutAvatarURL", urlString, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    NSURL *url = [NSURL URLWithString:urlString];
+    if (!url) return;
+
+    [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        (void)response;
+        if (error || !data.length) return;
+        UIImage *avatar = [SettingsViewController circularImageFromData:data size:24.0];
+        if (!avatar) return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSString *current = objc_getAssociatedObject(imageView, "cyanideAboutAvatarURL");
+            if (![current isEqualToString:urlString]) return;
+            imageView.image = avatar;
+        });
+    }] resume];
+}
+
 #pragma mark - Cells
 
 - (UITableViewCell *)buildBundleCellWithRow:(NSDictionary *)row tableView:(UITableView *)tableView
@@ -8337,8 +8444,138 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     return cell;
 }
 
+- (UIControl *)aboutAuthorPillWithAuthor:(NSDictionary *)author
+{
+    UIControl *pill = [[UIControl alloc] init];
+    pill.translatesAutoresizingMaskIntoConstraints = NO;
+    pill.backgroundColor = UIColor.tertiarySystemGroupedBackgroundColor;
+    pill.layer.cornerRadius = 17.0;
+    pill.layer.cornerCurve = kCACornerCurveContinuous;
+    pill.layer.borderWidth = 1.0;
+    pill.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.10].CGColor;
+    objc_setAssociatedObject(pill, "cyanideAboutXAccount", author[@"x"] ?: @"", OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [pill addTarget:self action:@selector(aboutAuthorCardTapped:) forControlEvents:UIControlEventTouchUpInside];
+
+    UIStackView *stack = [[UIStackView alloc] init];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisHorizontal;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.spacing = 7.0;
+    stack.userInteractionEnabled = NO;
+    [pill addSubview:stack];
+
+    UIImageView *avatar = [[UIImageView alloc] init];
+    avatar.translatesAutoresizingMaskIntoConstraints = NO;
+    avatar.contentMode = UIViewContentModeScaleAspectFill;
+    avatar.clipsToBounds = YES;
+    avatar.layer.cornerRadius = 12.0;
+    [avatar.widthAnchor constraintEqualToConstant:24.0].active = YES;
+    [avatar.heightAnchor constraintEqualToConstant:24.0].active = YES;
+    [self loadAboutAvatarURLString:author[@"avatar"]
+                     intoImageView:avatar
+                     fallbackColor:author[@"color"]];
+    [stack addArrangedSubview:avatar];
+
+    UILabel *name = [[UILabel alloc] init];
+    name.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
+    name.textColor = UIColor.labelColor;
+    name.text = author[@"name"] ?: @"Author";
+    name.textAlignment = NSTextAlignmentNatural;
+    [name setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [stack addArrangedSubview:name];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [pill.heightAnchor constraintEqualToConstant:34.0],
+        [stack.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor constant:8.0],
+        [stack.trailingAnchor constraintEqualToAnchor:pill.trailingAnchor constant:-10.0],
+        [stack.centerYAnchor constraintEqualToAnchor:pill.centerYAnchor],
+    ]];
+    return pill;
+}
+
+- (UIControl *)aboutTelegramPill
+{
+    UIControl *pill = [[UIControl alloc] init];
+    pill.translatesAutoresizingMaskIntoConstraints = NO;
+    pill.backgroundColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.10];
+    pill.layer.cornerRadius = 17.0;
+    pill.layer.cornerCurve = kCACornerCurveContinuous;
+    pill.layer.borderWidth = 1.0;
+    pill.layer.borderColor = [UIColor.systemBlueColor colorWithAlphaComponent:0.12].CGColor;
+    [pill addTarget:self action:@selector(aboutTelegramButtonTapped:) forControlEvents:UIControlEventTouchUpInside];
+
+    UIStackView *stack = [[UIStackView alloc] init];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisHorizontal;
+    stack.alignment = UIStackViewAlignmentCenter;
+    stack.spacing = 7.0;
+    stack.userInteractionEnabled = NO;
+    [pill addSubview:stack];
+
+    UIImageView *iconView = [[UIImageView alloc] initWithImage:[SettingsViewController telegramLogoImageWithSize:22.0]];
+    iconView.translatesAutoresizingMaskIntoConstraints = NO;
+    iconView.contentMode = UIViewContentModeScaleAspectFit;
+    [iconView.widthAnchor constraintEqualToConstant:22.0].active = YES;
+    [iconView.heightAnchor constraintEqualToConstant:22.0].active = YES;
+    [stack addArrangedSubview:iconView];
+
+    UILabel *label = [[UILabel alloc] init];
+    label.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightSemibold];
+    label.textColor = UIColor.systemBlueColor;
+    label.text = @"ios_cyanide";
+    [label setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+    [stack addArrangedSubview:label];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [pill.heightAnchor constraintEqualToConstant:34.0],
+        [stack.leadingAnchor constraintEqualToAnchor:pill.leadingAnchor constant:8.0],
+        [stack.trailingAnchor constraintEqualToAnchor:pill.trailingAnchor constant:-11.0],
+        [stack.centerYAnchor constraintEqualToAnchor:pill.centerYAnchor],
+    ]];
+    return pill;
+}
+
+- (UITableViewCell *)buildAboutProfileCellInTableView:(UITableView *)tableView
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"about-profile"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"about-profile"];
+    }
+    for (UIView *view in cell.contentView.subviews) {
+        [view removeFromSuperview];
+    }
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.accessoryType = UITableViewCellAccessoryNone;
+    cell.accessoryView = nil;
+
+    UIStackView *row = [[UIStackView alloc] init];
+    row.translatesAutoresizingMaskIntoConstraints = NO;
+    row.axis = UILayoutConstraintAxisHorizontal;
+    row.alignment = UIStackViewAlignmentCenter;
+    row.distribution = UIStackViewDistributionFill;
+    row.spacing = 8.0;
+    [cell.contentView addSubview:row];
+
+    for (NSDictionary *author in [self aboutAuthors]) {
+        [row addArrangedSubview:[self aboutAuthorPillWithAuthor:author]];
+    }
+    [row addArrangedSubview:[self aboutTelegramPill]];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [row.leadingAnchor constraintEqualToAnchor:cell.contentView.leadingAnchor constant:16.0],
+        [row.trailingAnchor constraintLessThanOrEqualToAnchor:cell.contentView.trailingAnchor constant:-16.0],
+        [row.topAnchor constraintEqualToAnchor:cell.contentView.topAnchor constant:7.0],
+        [row.bottomAnchor constraintEqualToAnchor:cell.contentView.bottomAnchor constant:-7.0],
+    ]];
+    return cell;
+}
+
 - (UITableViewCell *)buildAboutCellAtRow:(NSInteger)row tableView:(UITableView *)tableView
 {
+    if (row == 0) {
+        return [self buildAboutProfileCellInTableView:tableView];
+    }
+
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"about"];
     if (!cell) {
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"about"];
@@ -8349,32 +8586,16 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     cell.textLabel.textColor = UIColor.labelColor;
     cell.detailTextLabel.textColor = UIColor.secondaryLabelColor;
     cell.detailTextLabel.text = nil;
+    cell.accessoryView = nil;
 
-    if (row == 0) {
-        cell.imageView.image = [SettingsViewController iconBadgeWithSymbol:@"at" color:UIColor.systemBlueColor size:29.0];
-        cell.textLabel.text = @"Twitter";
-        cell.detailTextLabel.text = @"@zeroxjf";
-    } else if (row == 1) {
+    if (row == 1) {
         cell.imageView.image = [SettingsViewController iconBadgeWithSymbol:@"doc.text.magnifyingglass" color:UIColor.systemGrayColor size:29.0];
         cell.textLabel.text = @"View Log";
-    } else if (row == 2) {
+    } else {
         cell.imageView.image = [SettingsViewController iconBadgeWithSymbol:@"square.and.arrow.up" color:UIColor.systemGreenColor size:29.0];
         cell.textLabel.text = @"Share Log";
-    } else {
-        cell.imageView.image = [SettingsViewController iconBadgeWithSymbol:@"icloud.and.arrow.up" color:UIColor.systemIndigoColor size:29.0];
-        cell.textLabel.text = @"Auto-Upload Logs";
-        cell.accessoryType = UITableViewCellAccessoryNone;
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        UISwitch *sw = [[UISwitch alloc] init];
-        sw.on = [[NSUserDefaults standardUserDefaults] boolForKey:kSettingsLogUploadEnabled];
-        [sw addTarget:self action:@selector(logUploadSwitchChanged:) forControlEvents:UIControlEventValueChanged];
-        cell.accessoryView = sw;
     }
     return cell;
-}
-
-- (void)logUploadSwitchChanged:(UISwitch *)sw {
-    [[NSUserDefaults standardUserDefaults] setBool:sw.isOn forKey:kSettingsLogUploadEnabled];
 }
 
 - (void)reloadThemerSectionAndQueue
@@ -10350,10 +10571,31 @@ static NSString *settings_diagnostic_log_with_header(NSString *rawLog,
                                                      int seq);
 static NSURL *settings_write_snapshot_log_file(NSString *text);
 
-- (void)openTwitter
+- (void)openXAccount:(NSString *)account
 {
-    NSURL *url = [NSURL URLWithString:@"https://twitter.com/zeroxjf"];
+    if (!account.length) return;
+    NSString *safeAccount = [account stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!safeAccount.length) return;
+    NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://x.com/%@", safeAccount]];
     if (url) [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+}
+
+- (void)aboutAuthorCardTapped:(UIControl *)sender
+{
+    NSString *account = objc_getAssociatedObject(sender, "cyanideAboutXAccount");
+    [self openXAccount:account];
+}
+
+- (void)openTelegramGroup
+{
+    NSURL *url = [NSURL URLWithString:@"https://t.me/ios_cyanide"];
+    if (url) [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+}
+
+- (void)aboutTelegramButtonTapped:(UIControl *)sender
+{
+    (void)sender;
+    [self openTelegramGroup];
 }
 
 - (void)openViewLog
@@ -10441,14 +10683,6 @@ static NSURL *settings_write_snapshot_log_file(NSString *text);
     [self presentViewController:vc animated:YES completion:nil];
 }
 
-// Session-scoped state so uploaded snapshots from one chain run get grouped on
-// the server side (same sessionId, monotonically increasing seq). A fresh
-// session begins at every settings_run_actions() entry.
-static dispatch_source_t g_cyanide_upload_timer = NULL;
-static NSString         *g_cyanide_upload_session_id = nil;
-static NSMutableSet<NSString *> *g_cyanide_upload_milestones = nil;
-static volatile int      g_cyanide_upload_seq = 0;
-
 static NSString *settings_current_diagnostic_log_text(NSString *path, NSString **outSource) {
     NSString *snapshot = log_inapp_buffer_snapshot();
     if (snapshot.length) {
@@ -10526,118 +10760,10 @@ static NSURL *settings_write_snapshot_log_file(NSString *text) {
     return url;
 }
 
-// kind = "milestone" (important chain transition) or "final"
-// (post-completion). Milestones are explicit so uploads line up with exploit,
-// RemoteCall, tweak, and live-loop boundaries instead of timer noise.
-static void cyanide_upload_log_with_kind_event(NSString *kind, NSString *event) {
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:kSettingsLogUploadEnabled]) return;
-    NSString *path = log_most_recent_session_path();
-    NSString *logSource = nil;
-    NSString *rawLog = settings_current_diagnostic_log_text(path, &logSource);
-    if (!rawLog.length) return;
-
-    int seq = __sync_add_and_fetch(&g_cyanide_upload_seq, 1);
-    NSString *sessionId = g_cyanide_upload_session_id ?: @"adhoc";
-
-    NSString *appVersion = settings_app_version_string();
-    NSString *appBuild = settings_app_build_string();
-    NSString *iosVersion = [UIDevice currentDevice].systemVersion;
-
-    struct utsname sysInfo;
-    uname(&sysInfo);
-    NSString *machine = [NSString stringWithUTF8String:sysInfo.machine];
-
-    NSString *logPayload = settings_diagnostic_log_with_header(rawLog, path, logSource, sessionId, kind, event, seq);
-
-    NSDictionary *body = @{
-        @"log": logPayload,
-        @"meta": @{
-            @"build":      [NSString stringWithFormat:@"cyanide-%@-%@", appVersion, appBuild],
-            @"appVersion": appVersion,
-            @"appBuild":   appBuild,
-            @"source":     @"cyanide",
-            @"ios":        iosVersion,
-            @"device":     machine,
-            @"sessionId":  sessionId,
-            @"kind":       kind,
-            @"event":      event ?: @"",
-            @"seq":        @(seq),
-            @"logSource":  logSource ?: @"unknown",
-        }
-    };
-    NSData *data = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
-    if (!data) return;
-    NSURL *url = [NSURL URLWithString:@"https://brokenblade-weblogs.hackerboii.workers.dev/log"];
-    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
-    req.HTTPMethod = @"POST";
-    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-    req.HTTPBody = data;
-    printf("[LOG] uploading diagnostic (%s%s%s seq=%d source=%s, %zu bytes)...\n",
-           kind.UTF8String,
-           event.length ? ":" : "",
-           event.length ? event.UTF8String : "",
-           seq,
-           (logSource ?: @"unknown").UTF8String,
-           (size_t)data.length);
-    [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
-        if (e) {
-            printf("[LOG] upload %s%s%s failed: %s\n",
-                   kind.UTF8String,
-                   event.length ? ":" : "",
-                   event.length ? event.UTF8String : "",
-                   e.localizedDescription.UTF8String);
-        } else {
-            NSHTTPURLResponse *http = (NSHTTPURLResponse *)r;
-            printf("[LOG] upload %s%s%s ok: HTTP %ld\n",
-                   kind.UTF8String,
-                   event.length ? ":" : "",
-                   event.length ? event.UTF8String : "",
-                   (long)http.statusCode);
-        }
-    }] resume];
-}
-
-static void cyanide_upload_log_with_kind(NSString *kind) {
-    cyanide_upload_log_with_kind_event(kind, nil);
-}
-
-static void cyanide_upload_log_milestone(NSString *event) {
-    if (!event.length) return;
-
-    @synchronized ([NSUserDefaults standardUserDefaults]) {
-        if (!g_cyanide_upload_milestones)
-            g_cyanide_upload_milestones = [NSMutableSet set];
-        if ([g_cyanide_upload_milestones containsObject:event])
-            return;
-        [g_cyanide_upload_milestones addObject:event];
-    }
-
-    cyanide_upload_log_with_kind_event(@"milestone", event);
-}
-
-static void cyanide_upload_log_if_enabled(void) {
-    cyanide_upload_log_with_kind(@"final");
-}
-
-// Begin a diagnostic upload session. Uploads are milestone-driven; this no
-// longer starts the old 3s/8s periodic checkpoint timer.
-static void cyanide_start_session_uploads(void) {
-    if (![[NSUserDefaults standardUserDefaults] boolForKey:kSettingsLogUploadEnabled]) return;
-    if (g_cyanide_upload_timer) return;
-
-    g_cyanide_upload_session_id = [[NSUUID UUID] UUIDString];
-    @synchronized ([NSUserDefaults standardUserDefaults]) {
-        g_cyanide_upload_milestones = [NSMutableSet set];
-    }
-    g_cyanide_upload_seq = 0;
-}
-
-static void cyanide_stop_session_uploads(void) {
-    if (g_cyanide_upload_timer) {
-        dispatch_source_cancel(g_cyanide_upload_timer);
-        g_cyanide_upload_timer = NULL;
-    }
-}
+static void cyanide_upload_log_milestone(NSString *event) { (void)event; }
+static void cyanide_upload_log_if_enabled(void) {}
+static void cyanide_start_session_uploads(void) {}
+static void cyanide_stop_session_uploads(void) {}
 
 // Contact owner (zeroxjf) with the diagnostic log inline in the body. Build
 // info sits between the user's typing area at the top and the log dump
@@ -12990,10 +13116,11 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
                 return;
             }
             case RootSectionAbout:
-                if (indexPath.row == 0)      [self openTwitter];
-                else if (indexPath.row == 1) [self openViewLog];
-                else if (indexPath.row == 2) [self openShareLog];
-                // row 3: toggle — handled by UISwitch target, no action here
+                if (indexPath.row == 1) {
+                    [self openViewLog];
+                } else if (indexPath.row == 2) {
+                    [self openShareLog];
+                }
                 return;
             case RootSectionExperimental: {
                 [tableView deselectRowAtIndexPath:indexPath animated:YES];

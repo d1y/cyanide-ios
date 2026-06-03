@@ -65,37 +65,9 @@ static const BOOL kOldAutoUpdate = NO;
     [[UpdateChecker shared] checkForUpdatesIfNeededFrom:tab];
 }
 
-- (void)showLogCollectionOptInNoticeIfNeeded {
-    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
-    NSString *noticeKey = @"cyanide.privacy.logOptInDefaultNoticeShown";
-    if ([ud boolForKey:noticeKey]) return;
-
-    [ud setBool:NO forKey:kSettingsLogUploadEnabled];
-    [ud synchronize];
-
-    UIViewController *root = self.window.rootViewController;
-    if (!root) return;
-    NSString *msg = @"Automatic log collection is now off by default. Diagnostic uploads are opt-in only.\n\nYou can turn them on anytime in Settings > About > Auto-Upload Logs. When enabled, Cyanide uploads chain stage timing, error messages, device model, and iOS version after a run. Logs go to a private Cloudflare R2 bucket owned by @zeroxjf and expire after 30 days.";
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Log Collection Is Opt-In"
-                                                                   message:msg
-                                                            preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
-        [ud setBool:YES forKey:noticeKey];
-        [ud setBool:YES forKey:@"cyanide.privacy.logConsentShown"];
-        [ud synchronize];
-    }]];
-    [root presentViewController:alert animated:YES completion:nil];
-}
-
 - (void)sceneDidBecomeActive:(UIScene *)scene {
     [self selectInitialTabIfNeeded];
     settings_application_did_become_active();
-    // Independent paths: log collection opt-in notice (one-time) and update
-    // check (every foreground; UpdateChecker enforces a per-process + 24-hour
-    // persisted throttle so the API isn't hammered).
-    // The two can stack on first launch — that's intentional, an available
-    // update shouldn't be hidden behind a privacy preference.
-    [self showLogCollectionOptInNoticeIfNeeded];
     [self runUpdateCheck];
 }
 
