@@ -224,7 +224,6 @@ void ds_keepalive_apply_enabled(BOOL enabled)
 
         gKeepAliveRunning = YES;
         ds_keepalive_install_observers_once();
-        log_user("[APP] Keep Alive audio assertion active; StatBar data can keep feeding while minimized.\n");
     }
 }
 
