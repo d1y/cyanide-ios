@@ -43,6 +43,13 @@ typedef struct {
     double topAreaHeight;
 } NBLLayout;
 
+typedef struct {
+    double top;
+    double left;
+    double bottom;
+    double right;
+} NBLEdgeInsets;
+
 static const uint64_t kNBLBaseTag = 99540;
 static const double kNBLFallbackScreenWidth = 390.0;
 static const double kNBLWinH = 18.0;
@@ -54,6 +61,7 @@ static const double kNBLSideMargin = 20.0;
 static const double kNBLTopSideMargin = 29.0;
 static const double kNBLTopY = 0.0;
 static const double kNBLBottomY = 38.0;
+static const double kNBLDynamicIslandExtraY = 4.0;
 static const double kNBLTextHPad = 6.0;
 static const double kNBLMinWidth = 34.0;
 static const double kNBLNetworkWidth = 91.0;
@@ -902,6 +910,11 @@ static bool nbl_valid_screen_length(double v)
     return isfinite(v) && v >= 100.0 && v <= 2000.0;
 }
 
+static bool nbl_valid_top_area(double v)
+{
+    return isfinite(v) && v >= 8.0 && v <= 140.0;
+}
+
 static double nbl_fallback_top_area(double screenWidth, double screenHeight)
 {
     double shortSide = fmin(screenWidth, screenHeight);
@@ -913,13 +926,45 @@ static double nbl_fallback_top_area(double screenWidth, double screenHeight)
     return 20.0;
 }
 
+static uint64_t nbl_remote_key_window(void)
+{
+    if (!r_is_objc_ptr(gNBLUIApplicationClass)) gNBLUIApplicationClass = r_class("UIApplication");
+    if (!r_is_objc_ptr(gNBLUIApplicationClass)) return 0;
+    uint64_t app = r_msg2_main(gNBLUIApplicationClass, "sharedApplication", 0, 0, 0, 0);
+    if (!r_is_objc_ptr(app)) return 0;
+
+    uint64_t keyWin = r_msg2_main(app, "keyWindow", 0, 0, 0, 0);
+    if (r_is_objc_ptr(keyWin)) return keyWin;
+
+    uint64_t windows = r_msg2_main(app, "windows", 0, 0, 0, 0);
+    uint64_t count = r_is_objc_ptr(windows) ? r_msg2_main(windows, "count", 0, 0, 0, 0) : 0;
+    if (count > 0 && count < 64) return r_msg2_main(windows, "objectAtIndex:", 0, 0, 0, 0);
+    return 0;
+}
+
+static double nbl_remote_safe_area_top(void)
+{
+    uint64_t keyWin = nbl_remote_key_window();
+    if (!r_is_objc_ptr(keyWin)) return 0.0;
+
+    NBLEdgeInsets insets = {0};
+    bool ok = r_msg2_main_struct_ret(keyWin, "safeAreaInsets",
+                                     &insets, sizeof(insets),
+                                     NULL, 0, NULL, 0, NULL, 0, NULL, 0);
+    if (!ok || !nbl_valid_top_area(insets.top)) return 0.0;
+    return insets.top;
+}
+
 static NBLLayout nbl_read_layout(void)
 {
     NBLLayout m = { kNBLFallbackScreenWidth, 844.0, 47.0 };
     CGRect b = UIScreen.mainScreen.bounds;
     if (nbl_valid_screen_length(b.size.width)) m.screenWidth = b.size.width;
     if (nbl_valid_screen_length(b.size.height)) m.screenHeight = b.size.height;
-    m.topAreaHeight = nbl_fallback_top_area(m.screenWidth, m.screenHeight);
+    m.topAreaHeight = nbl_remote_safe_area_top();
+    if (!nbl_valid_top_area(m.topAreaHeight)) {
+        m.topAreaHeight = nbl_fallback_top_area(m.screenWidth, m.screenHeight);
+    }
     return m;
 }
 
@@ -931,8 +976,10 @@ static double nbl_top_row_y(double topAreaHeight)
 
 static double nbl_bottom_row_y(double topAreaHeight)
 {
-    (void)topAreaHeight;
-    return kNBLBottomY;
+    if (!nbl_valid_top_area(topAreaHeight)) return kNBLBottomY;
+    double y = topAreaHeight - (kNBLWinH / 2.0);
+    if (topAreaHeight >= 55.0) y += kNBLDynamicIslandExtraY;
+    return fmax(kNBLBottomY, floor(y));
 }
 
 static bool nbl_send_double_main(uint64_t obj, const char *selName, double value)

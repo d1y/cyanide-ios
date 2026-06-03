@@ -25,7 +25,8 @@ static const double kNSBarFontPt = 11.5;
 static const double kNSBarWinLevel = 999.0;
 static const double kNSBarMargin = 20.0;
 static const double kNSBarTopY = 0.0;      // 顶部留 1px 间距
-static const double kNSBarBottomY = 38.0;  // 更靠下（从 28.0 改为 44.0）
+static const double kNSBarBottomY = 38.0;
+static const double kNSBarDynamicIslandExtraY = 4.0;
 static const double kNSBarTextHPad = 7.0;
 static const double kNSBarMinWidth = 54.0;
 static const double kNSBarNetworkWidth = 104.0;
@@ -59,6 +60,19 @@ typedef struct {
     double width;
     double height;
 } NSBarRect;
+
+typedef struct {
+    double screenWidth;
+    double screenHeight;
+    double topAreaHeight;
+} NSBarLayout;
+
+typedef struct {
+    double top;
+    double left;
+    double bottom;
+    double right;
+} NSBarEdgeInsets;
 
 static bool nsbar_should_log_tick(void)
 {
@@ -312,11 +326,82 @@ static double nsbar_measure_text_width(NSString *text)
     return ceil([text sizeWithAttributes:attrs].width);
 }
 
-static double nsbar_width_for_text(NSString *text, NSBarPosition position)
+static bool nsbar_valid_screen_length(double v)
 {
+    return isfinite(v) && v >= 100.0 && v <= 2000.0;
+}
+
+static bool nsbar_valid_top_area(double v)
+{
+    return isfinite(v) && v >= 8.0 && v <= 140.0;
+}
+
+static double nsbar_fallback_top_area(double screenWidth, double screenHeight)
+{
+    double shortSide = fmin(screenWidth, screenHeight);
+    double longSide = fmax(screenWidth, screenHeight);
+    if (!nsbar_valid_screen_length(shortSide) || !nsbar_valid_screen_length(longSide)) return 20.0;
+    if (longSide >= 852.0 && shortSide >= 390.0) return 59.0;
+    if (longSide >= 844.0 && shortSide >= 390.0) return 47.0;
+    if (longSide >= 812.0 && shortSide >= 375.0) return 44.0;
+    return 20.0;
+}
+
+static uint64_t nsbar_remote_key_window(void)
+{
+    uint64_t UIApplication = r_class("UIApplication");
+    if (!r_is_objc_ptr(UIApplication)) return 0;
+    uint64_t app = r_msg2_main(UIApplication, "sharedApplication", 0, 0, 0, 0);
+    if (!r_is_objc_ptr(app)) return 0;
+
+    uint64_t keyWin = r_msg2_main(app, "keyWindow", 0, 0, 0, 0);
+    if (r_is_objc_ptr(keyWin)) return keyWin;
+
+    uint64_t windows = r_msg2_main(app, "windows", 0, 0, 0, 0);
+    uint64_t count = r_is_objc_ptr(windows) ? r_msg2_main(windows, "count", 0, 0, 0, 0) : 0;
+    if (count > 0 && count < 64) return r_msg2_main(windows, "objectAtIndex:", 0, 0, 0, 0);
+    return 0;
+}
+
+static double nsbar_remote_safe_area_top(void)
+{
+    uint64_t keyWin = nsbar_remote_key_window();
+    if (!r_is_objc_ptr(keyWin)) return 0.0;
+
+    NSBarEdgeInsets insets = {0};
+    bool ok = r_msg2_main_struct_ret(keyWin, "safeAreaInsets",
+                                     &insets, sizeof(insets),
+                                     NULL, 0, NULL, 0, NULL, 0, NULL, 0);
+    if (!ok || !nsbar_valid_top_area(insets.top)) return 0.0;
+    return insets.top;
+}
+
+static NSBarLayout nsbar_read_layout(void)
+{
+    NSBarLayout layout = { 390.0, 844.0, 47.0 };
     CGRect bounds = UIScreen.mainScreen.bounds;
-    double screenWidth = bounds.size.width;
-    if (!isfinite(screenWidth) || screenWidth < 100.0) screenWidth = 390.0;
+    if (nsbar_valid_screen_length(bounds.size.width)) layout.screenWidth = bounds.size.width;
+    if (nsbar_valid_screen_length(bounds.size.height)) layout.screenHeight = bounds.size.height;
+
+    layout.topAreaHeight = nsbar_remote_safe_area_top();
+    if (!nsbar_valid_top_area(layout.topAreaHeight)) {
+        layout.topAreaHeight = nsbar_fallback_top_area(layout.screenWidth, layout.screenHeight);
+    }
+    return layout;
+}
+
+static double nsbar_bottom_row_y(double topAreaHeight)
+{
+    if (!nsbar_valid_top_area(topAreaHeight)) return kNSBarBottomY;
+    double y = topAreaHeight - (kNSBarWinH / 2.0);
+    if (topAreaHeight >= 55.0) y += kNSBarDynamicIslandExtraY;
+    return fmax(kNSBarBottomY, floor(y));
+}
+
+static double nsbar_width_for_text(NSString *text, NSBarPosition position, NSBarLayout layout)
+{
+    double screenWidth = layout.screenWidth;
+    if (!nsbar_valid_screen_length(screenWidth)) screenWidth = 390.0;
     double maxWidth = (position == NSBarPositionCenter)
         ? screenWidth * 0.40
         : (screenWidth * 0.5) - kNSBarMargin - 4.0;
@@ -328,10 +413,14 @@ static double nsbar_width_for_text(NSString *text, NSBarPosition position)
     return width;
 }
 
-static void nsbar_calculate_position(NSBarPosition position, double *outX, double *outY, double width)
+static void nsbar_calculate_position(NSBarPosition position,
+                                     NSBarLayout layout,
+                                     double *outX,
+                                     double *outY,
+                                     double width)
 {
-    CGRect bounds = UIScreen.mainScreen.bounds;
-    double screenWidth = bounds.size.width;
+    double screenWidth = layout.screenWidth;
+    if (!nsbar_valid_screen_length(screenWidth)) screenWidth = 390.0;
     
     double x = 0.0;
     double y = 0.0;
@@ -343,7 +432,7 @@ static void nsbar_calculate_position(NSBarPosition position, double *outX, doubl
             break;
         case NSBarPositionBottomLeft:
             x = kNSBarMargin;
-            y = kNSBarBottomY;
+            y = nsbar_bottom_row_y(layout.topAreaHeight);
             break;
         case NSBarPositionTopRight:
             x = screenWidth - width - kNSBarMargin;
@@ -351,12 +440,12 @@ static void nsbar_calculate_position(NSBarPosition position, double *outX, doubl
             break;
         case NSBarPositionBottomRight:
             x = screenWidth - width - kNSBarMargin;
-            y = kNSBarBottomY;
+            y = nsbar_bottom_row_y(layout.topAreaHeight);
             break;
         case NSBarPositionCenter:
             // With StatBar same position
             x = (screenWidth - width) / 2.0;
-            y = kNSBarBottomY;
+            y = nsbar_bottom_row_y(layout.topAreaHeight);
             printf("[NSBAR] Center position: screenWidth=%.1f width=%.1f x=%.1f y=%.1f\n",
                    screenWidth, width, x, y);
             break;
@@ -375,15 +464,16 @@ static bool nsbar_apply_overlay_layout(uint64_t win, uint64_t label, NSBarPositi
 {
     if (!r_is_objc_ptr(win)) return false;
 
-    double width = nsbar_width_for_text(text, position);
+    NSBarLayout layout = nsbar_read_layout();
+    double width = nsbar_width_for_text(text, position, layout);
     double x = 0.0;
     double y = 0.0;
     
-    nsbar_calculate_position(position, &x, &y, width);
+    nsbar_calculate_position(position, layout, &x, &y, width);
 
     if (nsbar_should_log_tick()) {
-        printf("[NSBAR] overlay: layout position=%d frame={%.1f,%.1f,%.1f,%.1f}\n",
-               position, x, y, width, kNSBarWinH);
+        printf("[NSBAR] overlay: layout position=%d screen=%.1fx%.1f top=%.1f frame={%.1f,%.1f,%.1f,%.1f}\n",
+               position, layout.screenWidth, layout.screenHeight, layout.topAreaHeight, x, y, width, kNSBarWinH);
     }
 
     bool ok = true;
