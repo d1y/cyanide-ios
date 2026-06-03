@@ -2726,6 +2726,27 @@ static BOOL settings_dark_tweaks_any_enabled(NSUserDefaults *d)
            [d boolForKey:kSettingsDSDragCoefficientEnabled];
 }
 
+static BOOL settings_enabled_tweak_should_run(NSUserDefaults *d, NSString *key, BOOL pendingOnly)
+{
+    if (![d boolForKey:key]) return NO;
+    return !pendingOnly || !settings_tweak_is_applied(key);
+}
+
+static BOOL settings_dark_tweaks_should_run(NSUserDefaults *d, BOOL pendingOnly)
+{
+    for (NSString *key in @[
+        kSettingsDSDisableAppLibrary,
+        kSettingsDSDisableIconFlyIn,
+        kSettingsDSZeroWakeAnimation,
+        kSettingsDSZeroBacklightFade,
+        kSettingsDSDoubleTapToLock,
+        kSettingsDSDragCoefficientEnabled,
+    ]) {
+        if (settings_enabled_tweak_should_run(d, key, pendingOnly)) return YES;
+    }
+    return NO;
+}
+
 static bool settings_apply_dark_tweaks_from_defaults_locked(NSUserDefaults *d)
 {
     if (!settings_dark_tweaks_any_enabled(d)) return false;
@@ -5289,7 +5310,7 @@ void settings_register_defaults(void)
     settings_install_screen_awake_observers();
 }
 
-void settings_run_actions(void)
+static void settings_run_actions_internal(BOOL pendingOnly)
 {
     if (!settings_device_supported()) {
         printf("[SETTINGS] run blocked: %s\n", settings_unsupported_message().UTF8String);
@@ -5305,8 +5326,9 @@ void settings_run_actions(void)
             log_user("[RUN] Already running. Queued one follow-up run for the latest package state.\n");
             return;
         }
-        if (g_statbar_live_running || g_nsbar_live_running || g_nicebarlite_live_running ||
-            g_rssi_live_running || g_axonlite_live_running || g_typebanner_live_running) {
+        if (!pendingOnly &&
+            (g_statbar_live_running || g_nsbar_live_running || g_nicebarlite_live_running ||
+             g_rssi_live_running || g_axonlite_live_running || g_typebanner_live_running)) {
             settings_request_all_live_loops_stop("Apply Tweaks");
             settings_wait_live_loops_stopped_for_switch("Apply Tweaks");
         }
@@ -5316,25 +5338,38 @@ void settings_run_actions(void)
         NSString *runCompletionMessage = @"Run failed. Check the log for details.";
         @try {
             BOOL patchSandboxExt = [d boolForKey:kSettingsRunPatchSandboxExt];
-            BOOL runPowercuff = [d boolForKey:kSettingsPowercuffEnabled];
-            BOOL runSandboxEscape = [d boolForKey:kSettingsRunSandboxEscape];
-            BOOL runSBC = [d boolForKey:kSettingsSBCEnabled];
-            BOOL runDarkTweaks = settings_dark_tweaks_any_enabled(d);
-            BOOL runStatBar = [d boolForKey:kSettingsStatBarEnabled];
-            BOOL runNSBar = [d boolForKey:kSettingsNSBarEnabled];
-            BOOL runNiceBarLite = [d boolForKey:kSettingsNiceBarLiteEnabled];
-            BOOL runRSSI = settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled];
-            BOOL runAxonLite = [d boolForKey:kSettingsAxonLiteEnabled];
-            BOOL runTypeBanner = [d boolForKey:kSettingsTypeBannerEnabled];
-            BOOL runThemer = [d boolForKey:kSettingsThemerEnabled];
-            BOOL runSnowBoardLite = [d boolForKey:kSettingsSnowBoardLiteEnabled];
-            BOOL runLayoutExtras = [d boolForKey:kSettingsLayoutExtrasEnabled];
-            BOOL runLiveWP = [d boolForKey:kSettingsLiveWPEnabled];
+            BOOL runPowercuff = settings_enabled_tweak_should_run(d, kSettingsPowercuffEnabled, pendingOnly);
+            BOOL forceSpringBoardRefresh = pendingOnly &&
+                                           runPowercuff &&
+                                           settings_has_persistent_springboard_remote_call_user();
+            BOOL springBoardPendingOnly = pendingOnly && !forceSpringBoardRefresh;
+            BOOL statBarEnabled = [d boolForKey:kSettingsStatBarEnabled];
+            BOOL nsBarEnabled = [d boolForKey:kSettingsNSBarEnabled];
+            BOOL niceBarLiteEnabled = [d boolForKey:kSettingsNiceBarLiteEnabled];
+            BOOL rssiEnabled = settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled];
+            BOOL axonLiteEnabled = [d boolForKey:kSettingsAxonLiteEnabled];
+            BOOL typeBannerEnabled = [d boolForKey:kSettingsTypeBannerEnabled];
+            BOOL liveWPEnabled = [d boolForKey:kSettingsLiveWPEnabled];
+            BOOL runSBC = settings_enabled_tweak_should_run(d, kSettingsSBCEnabled, springBoardPendingOnly);
+            BOOL runDarkTweaks = settings_dark_tweaks_should_run(d, springBoardPendingOnly);
+            BOOL runStatBar = settings_enabled_tweak_should_run(d, kSettingsStatBarEnabled, springBoardPendingOnly);
+            BOOL runNSBar = settings_enabled_tweak_should_run(d, kSettingsNSBarEnabled, springBoardPendingOnly);
+            BOOL runNiceBarLite = settings_enabled_tweak_should_run(d, kSettingsNiceBarLiteEnabled, springBoardPendingOnly);
+            BOOL runRSSI = settings_rssi_install_allowed() && settings_enabled_tweak_should_run(d, kSettingsRSSIDisplayEnabled, springBoardPendingOnly);
+            BOOL runAxonLite = settings_enabled_tweak_should_run(d, kSettingsAxonLiteEnabled, springBoardPendingOnly);
+            BOOL runTypeBanner = settings_enabled_tweak_should_run(d, kSettingsTypeBannerEnabled, springBoardPendingOnly);
+            BOOL runThemer = settings_enabled_tweak_should_run(d, kSettingsThemerEnabled, springBoardPendingOnly);
+            BOOL runSnowBoardLite = settings_enabled_tweak_should_run(d, kSettingsSnowBoardLiteEnabled, springBoardPendingOnly);
+            BOOL runLayoutExtras = settings_enabled_tweak_should_run(d, kSettingsLayoutExtrasEnabled, springBoardPendingOnly);
+            BOOL runLiveWP = settings_enabled_tweak_should_run(d, kSettingsLiveWPEnabled, springBoardPendingOnly);
+            BOOL needsSpringBoardWork = runSBC || runDarkTweaks || runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runLayoutExtras || runTypeBanner || runThemer || runSnowBoardLite || runLiveWP;
+            BOOL runSandboxEscape = [d boolForKey:kSettingsRunSandboxEscape] && (!pendingOnly || needsSpringBoardWork);
             // TypeBanner prewarms its hidden SpringBoard window during Apply
             // and reuses the open SpringBoard session for text-only updates.
-            BOOL needsSpringBoard = runSandboxEscape || runSBC || runDarkTweaks || runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runLayoutExtras || runTypeBanner || runThemer || runSnowBoardLite || runLiveWP;
+            BOOL needsSpringBoard = runSandboxEscape || needsSpringBoardWork;
 
-            NSUInteger total = 1;
+            BOOL hasRunWork = patchSandboxExt || runPowercuff || needsSpringBoard;
+            NSUInteger total = hasRunWork ? 1 : 0;
             if (patchSandboxExt) total++;
             if (runPowercuff) total++;
             if (needsSpringBoard) total++;
@@ -5366,6 +5401,9 @@ void settings_run_actions(void)
                      runAxonLite ? "yes" : "no",
                      runPowercuff ? "yes" : "no",
                      runLiveWP ? "yes" : "no");
+            if (forceSpringBoardRefresh) {
+                log_user("[PLAN] Powercuff will refresh active SpringBoard live tweaks after process switch.\n");
+            }
             if (runSBC) {
                 log_user("[PLAN] Home layout target: dock=%ld home=%ldx%ld labels=%s\n",
                          (long)[d integerForKey:kSettingsSBCDockIcons],
@@ -5406,6 +5444,21 @@ void settings_run_actions(void)
                 log_user("[PLAN] Powercuff target: thermalmonitord level=%s\n", lvl.UTF8String);
             }
             cyanide_upload_log_milestone(@"run-plan");
+
+            if (!hasRunWork) {
+                if (!statBarEnabled) g_statbar_live_stop_requested = 1;
+                if (!nsBarEnabled) g_nsbar_live_stop_requested = 1;
+                if (!niceBarLiteEnabled) g_nicebarlite_live_stop_requested = 1;
+                if (!rssiEnabled) g_rssi_live_stop_requested = 1;
+                if (!axonLiteEnabled) g_axonlite_live_stop_requested = 1;
+                if (!typeBannerEnabled) g_typebanner_live_stop_requested = 1;
+                if (!liveWPEnabled) g_livewp_live_stop_requested = 1;
+                log_user("[DONE] No pending runtime changes to apply.\n");
+                runSucceeded = YES;
+                runCompletionMessage = @"Done. No pending runtime changes to apply.";
+                cyanide_upload_log_milestone(@"run-noop");
+                return;
+            }
 
             settings_progress(&step, total, "Preparing KRW primitives (socket/IOSurface path)");
             if (!settings_ensure_kexploit()) {
@@ -5763,7 +5816,7 @@ void settings_run_actions(void)
             settings_reconcile_applied_from_defaults();
             if (__sync_bool_compare_and_swap(&g_settings_actions_rerun_requested, 1, 0)) {
                 log_user("[RUN] Applying queued follow-up run.\n");
-                settings_run_actions();
+                settings_run_actions_internal(pendingOnly);
                 return;
             }
             dispatch_async(dispatch_get_main_queue(), ^{
@@ -5780,6 +5833,16 @@ void settings_run_actions(void)
             });
         }
     });
+}
+
+void settings_run_actions(void)
+{
+    settings_run_actions_internal(NO);
+}
+
+void settings_run_pending_actions(void)
+{
+    settings_run_actions_internal(YES);
 }
 
 typedef NS_ENUM(NSInteger, SettingsSection) {

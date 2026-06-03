@@ -96,6 +96,7 @@ NSString *settings_snowboardlite_selected_theme_display_name(void);
 BOOL settings_apply_nano_registry_now(BOOL apply);
 
 void settings_run_actions(void);
+void settings_run_pending_actions(void);
 void settings_destroy_springboard_remote_call(void);
 void settings_destroy_springboard_remote_call_sync(void);
 void settings_best_effort_termination_cleanup(const char *reason);
