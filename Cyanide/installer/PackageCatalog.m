@@ -207,6 +207,12 @@ static const NSInteger kSecDragCoefficient = 18;
                                      enabledKey:kSettingsLayoutExtrasEnabled
                                           isNew:YES];
         layoutExtras.settingsSection = kSecLayoutExtras;
+        NSInteger iosMajor = [[NSProcessInfo processInfo] operatingSystemVersion].majorVersion;
+        if (iosMajor >= 26) {
+            layoutExtras.knownIssues = @[
+                @"iOS 26: layout may reset after rotation or page swipe. Re-run to reapply.",
+            ];
+        }
 
         Package *nanoRegistry = [[Package alloc] initWithIdentifier:@"com.darksword.nanoregistry"
                                            name:@"Watch Pairing Override"

@@ -56,6 +56,10 @@ typedef NS_ENUM(NSInteger, PackageInstallKind) {
 // but cannot queue a fresh install until the reason is cleared.
 @property (nonatomic, copy, nullable) NSString *installDisabledReason;
 
+// Non-nil means the detail view shows a prominent "Known Issues" card.
+// Each string is rendered as one bullet.
+@property (nonatomic, copy, nullable) NSArray<NSString *> *knownIssues;
+
 // YES means the package is gated behind kSettingsExperimentalTweaksEnabled.
 // When the master experimental switch is off, +[PackageCatalog allPackages]
 // filters experimental packages out entirely so they don't appear in the

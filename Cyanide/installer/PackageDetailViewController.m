@@ -11,6 +11,7 @@
 
 typedef NS_ENUM(NSInteger, PackageDetailSection) {
     PackageDetailSectionWarning = 0,
+    PackageDetailSectionKnownIssues,
     PackageDetailSectionInfo,
     PackageDetailSectionAction,
     PackageDetailSectionSettings,
@@ -146,6 +147,9 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         NSMutableArray<NSNumber *> *sections = [NSMutableArray array];
         if (package.unstableWarning.length > 0) {
             [sections addObject:@(PackageDetailSectionWarning)];
+        }
+        if (package.knownIssues.count > 0) {
+            [sections addObject:@(PackageDetailSectionKnownIssues)];
         }
         [sections addObject:@(PackageDetailSectionDescription)];
         _settingsSummary = [SettingsViewController settingsSummaryForSection:package.settingsSection];
@@ -482,12 +486,13 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section
 {
     switch ([self sectionAtIndex:section]) {
-        case PackageDetailSectionWarning:     return 1;
-        case PackageDetailSectionInfo:        return (NSInteger)[self currentInfoRows].count;
-        case PackageDetailSectionAction:      return 1;
-        case PackageDetailSectionSettings:    return (NSInteger)self.settingsSummary.count;
-        case PackageDetailSectionDescription: return 1;
-        case PackageDetailSectionCount:       return 0;
+        case PackageDetailSectionWarning:      return 1;
+        case PackageDetailSectionKnownIssues:  return 1;
+        case PackageDetailSectionInfo:         return (NSInteger)[self currentInfoRows].count;
+        case PackageDetailSectionAction:       return 1;
+        case PackageDetailSectionSettings:     return (NSInteger)self.settingsSummary.count;
+        case PackageDetailSectionDescription:  return 1;
+        case PackageDetailSectionCount:        return 0;
     }
     return 0;
 }
@@ -495,12 +500,13 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section
 {
     switch ([self sectionAtIndex:section]) {
-        case PackageDetailSectionWarning:     return nil;
-        case PackageDetailSectionInfo:        return @"Information";
-        case PackageDetailSectionAction:      return @"Configure";
-        case PackageDetailSectionSettings:    return @"Current Settings";
-        case PackageDetailSectionDescription: return @"Description";
-        case PackageDetailSectionCount:       return nil;
+        case PackageDetailSectionWarning:      return nil;
+        case PackageDetailSectionKnownIssues:  return @"Known Issues";
+        case PackageDetailSectionInfo:         return @"Information";
+        case PackageDetailSectionAction:       return @"Configure";
+        case PackageDetailSectionSettings:     return @"Current Settings";
+        case PackageDetailSectionDescription:  return @"Description";
+        case PackageDetailSectionCount:        return nil;
     }
     return nil;
 }
@@ -556,6 +562,74 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
                 [label.trailingAnchor  constraintEqualToAnchor:m.trailingAnchor],
                 [label.topAnchor       constraintEqualToAnchor:m.topAnchor],
                 [label.bottomAnchor    constraintEqualToAnchor:m.bottomAnchor],
+            ]];
+            return cell;
+        }
+        case PackageDetailSectionKnownIssues: {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"KnownIssuesCell"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault
+                                              reuseIdentifier:@"KnownIssuesCell"];
+                cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            }
+            for (UIView *v in [cell.contentView.subviews copy]) [v removeFromSuperview];
+            cell.textLabel.text = nil;
+            cell.imageView.image = nil;
+            cell.backgroundColor = UIColor.clearColor;
+
+            UIColor *accent = UIColor.systemOrangeColor;
+            UIView *card = [[UIView alloc] init];
+            card.translatesAutoresizingMaskIntoConstraints = NO;
+            card.backgroundColor = [accent colorWithAlphaComponent:0.06];
+            card.layer.borderColor = [accent colorWithAlphaComponent:0.35].CGColor;
+            card.layer.borderWidth = 1.0;
+            card.layer.cornerRadius = 10.0;
+            card.layer.cornerCurve = kCACornerCurveContinuous;
+            card.layer.masksToBounds = YES;
+
+            NSMutableParagraphStyle *paragraph = [[NSMutableParagraphStyle alloc] init];
+            paragraph.headIndent = 14.0;
+            paragraph.firstLineHeadIndent = 0.0;
+            paragraph.paragraphSpacing = 6.0;
+            paragraph.lineSpacing = 1.0;
+
+            NSDictionary *bulletAttrs = @{
+                NSFontAttributeName: [UIFont systemFontOfSize:13.0],
+                NSForegroundColorAttributeName: accent,
+                NSParagraphStyleAttributeName: paragraph,
+            };
+            NSDictionary *textAttrs = @{
+                NSFontAttributeName: [UIFont systemFontOfSize:13.0],
+                NSForegroundColorAttributeName: UIColor.labelColor,
+                NSParagraphStyleAttributeName: paragraph,
+            };
+
+            NSMutableAttributedString *body = [[NSMutableAttributedString alloc] init];
+            [self.package.knownIssues enumerateObjectsUsingBlock:^(NSString *issue, NSUInteger idx, BOOL *stop) {
+                if (idx > 0) [body appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n"]];
+                [body appendAttributedString:[[NSAttributedString alloc] initWithString:@"•  " attributes:bulletAttrs]];
+                [body appendAttributedString:[[NSAttributedString alloc] initWithString:issue ?: @"" attributes:textAttrs]];
+            }];
+
+            UILabel *bodyLabel = [[UILabel alloc] init];
+            bodyLabel.translatesAutoresizingMaskIntoConstraints = NO;
+            bodyLabel.attributedText = body;
+            bodyLabel.numberOfLines = 0;
+
+            [card addSubview:bodyLabel];
+            [cell.contentView addSubview:card];
+
+            UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
+            [NSLayoutConstraint activateConstraints:@[
+                [card.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+                [card.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+                [card.topAnchor constraintEqualToAnchor:m.topAnchor],
+                [card.bottomAnchor constraintEqualToAnchor:m.bottomAnchor],
+
+                [bodyLabel.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14.0],
+                [bodyLabel.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14.0],
+                [bodyLabel.topAnchor constraintEqualToAnchor:card.topAnchor constant:12.0],
+                [bodyLabel.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-12.0],
             ]];
             return cell;
         }
