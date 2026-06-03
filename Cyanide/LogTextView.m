@@ -40,31 +40,49 @@ void log_init(void) {
 static char line_buf[LOG_LINE_SIZE];
 static int  line_pos = 0;
 
-static void log_write_raw(const char *msg) {
+static void log_timestamp_prefix(char *out, size_t outLen) {
+    if (!out || outLen == 0) return;
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    struct tm tm;
+    localtime_r(&tv.tv_sec, &tm);
+    int ms = (int)(tv.tv_usec / 1000);
+    snprintf(out, outLen, "[%02d:%02d:%02d.%03d] ",
+             tm.tm_hour, tm.tm_min, tm.tm_sec, ms);
+}
+
+static int log_skip_timestamp = 0;
+
+static void log_write_raw_internal(const char *msg, int skipTimestamp) {
     pthread_mutex_lock(&log_mutex);
 
     while (*msg) {
         if (*msg == '\n') {
             line_buf[line_pos] = '\0';
+            char stamped_line[LOG_LINE_SIZE];
+            if (line_pos > 0) {
+                if (skipTimestamp) {
+                    strlcpy(stamped_line, line_buf, sizeof(stamped_line));
+                } else {
+                    char prefix[32];
+                    log_timestamp_prefix(prefix, sizeof(prefix));
+                    snprintf(stamped_line, sizeof(stamped_line), "%s%s", prefix, line_buf);
+                }
+            } else {
+                stamped_line[0] = '\0';
+            }
 
             if (log_count >= LOG_MAX_LINES) {
                 memmove(log_buf[0], log_buf[LOG_MAX_LINES - LOG_TRIM_TO], LOG_TRIM_TO * LOG_LINE_SIZE);
                 log_count = LOG_TRIM_TO;
                 log_trim_gen++;
             }
-            strlcpy(log_buf[log_count], line_buf, LOG_LINE_SIZE);
+            strlcpy(log_buf[log_count], stamped_line, LOG_LINE_SIZE);
             log_count++;
             log_dirty = 1;
 
             if (log_file) {
-                struct timeval tv;
-                gettimeofday(&tv, NULL);
-                struct tm tm;
-                localtime_r(&tv.tv_sec, &tm);
-                int ms = (int)(tv.tv_usec / 1000);
-                fprintf(log_file, "[%02d:%02d:%02d.%03d] %s\n",
-                        tm.tm_hour, tm.tm_min, tm.tm_sec, ms,
-                        line_buf);
+                fprintf(log_file, "%s\n", stamped_line);
                 fflush(log_file);
             }
 
@@ -77,6 +95,14 @@ static void log_write_raw(const char *msg) {
     }
 
     pthread_mutex_unlock(&log_mutex);
+}
+
+static void log_write_raw(const char *msg) {
+    log_write_raw_internal(msg, log_skip_timestamp);
+}
+
+void log_write_raw_no_timestamp(const char *msg) {
+    log_write_raw_internal(msg, 1);
 }
 
 void log_write(const char *msg) {
@@ -287,47 +313,67 @@ static NSString *log_snapshot_from(int fromLine, int *outTotal, int *outTrimGen)
 // Color map
 
 static UIColor *colorForLogLine(NSString *line) {
+    // ASCII banner (cyan bottle art)
+    if ([line containsString:@"╭"] || [line containsString:@"╰"] ||
+        [line containsString:@"│"] || [line containsString:@"├"] ||
+        [line containsString:@"C Y A N I D E"])
+        return [UIColor colorWithRed:0.00 green:0.90 blue:0.95 alpha:1.0];
+
+    // Strip timestamp prefix if present: "[HH:MM:SS.mmm] "
+    NSString *content = line;
+    if (line.length > 15 && [line characterAtIndex:0] == '[') {
+        NSRange closeBracket = [line rangeOfString:@"] "];
+        if (closeBracket.location != NSNotFound && closeBracket.location < 20) {
+            content = [line substringFromIndex:closeBracket.location + 2];
+        }
+    }
+
     // Slim-mode milestone labels
-    if ([line hasPrefix:@"[OK]"])          return [UIColor colorWithRed:0.38 green:0.90 blue:0.55 alpha:1.0]; // bright green
-    if ([line hasPrefix:@"[WARN]"])        return [UIColor colorWithRed:0.96 green:0.38 blue:0.32 alpha:1.0]; // red
-    if ([line hasPrefix:@"[FAIL]"])        return [UIColor colorWithRed:0.98 green:0.25 blue:0.50 alpha:1.0]; // pink-red
-    if ([line hasPrefix:@"[DONE]"])        return [UIColor colorWithRed:0.30 green:0.85 blue:0.95 alpha:1.0]; // cyan
-    if ([line hasPrefix:@"[RUN"])          return [UIColor colorWithRed:0.98 green:0.82 blue:0.30 alpha:1.0]; // gold ([RUN] and [RUN N/N])
-    if ([line hasPrefix:@"[PLAN]"])        return [UIColor colorWithRed:0.65 green:0.60 blue:0.95 alpha:1.0]; // indigo
-    if ([line hasPrefix:@"[BOOT]"])        return [UIColor colorWithRed:0.55 green:0.72 blue:0.92 alpha:1.0]; // cornflower
-    if ([line hasPrefix:@"[SESSION]"])     return [UIColor colorWithRed:0.38 green:0.68 blue:0.98 alpha:1.0]; // bright sky blue
-    if ([line hasPrefix:@"[CLEANUP]"])     return [UIColor colorWithRed:0.82 green:0.72 blue:0.56 alpha:1.0]; // warm tan
-    if ([line hasPrefix:@"[LOG]"])         return [UIColor colorWithRed:0.60 green:0.62 blue:0.68 alpha:1.0]; // muted gray
+    if ([content hasPrefix:@"[OK]"])          return [UIColor colorWithRed:0.38 green:0.90 blue:0.55 alpha:1.0]; // bright green
+    if ([content hasPrefix:@"[WARN]"])        return [UIColor colorWithRed:0.96 green:0.38 blue:0.32 alpha:1.0]; // red
+    if ([content hasPrefix:@"[FAIL]"])        return [UIColor colorWithRed:0.98 green:0.25 blue:0.50 alpha:1.0]; // pink-red
+    if ([content hasPrefix:@"[DONE]"])        return [UIColor colorWithRed:0.30 green:0.85 blue:0.95 alpha:1.0]; // cyan
+    if ([content hasPrefix:@"[RUN"])          return [UIColor colorWithRed:0.98 green:0.82 blue:0.30 alpha:1.0]; // gold ([RUN] and [RUN N/N])
+    if ([content hasPrefix:@"[PLAN]"])        return [UIColor colorWithRed:0.65 green:0.60 blue:0.95 alpha:1.0]; // indigo
+    if ([content hasPrefix:@"[BOOT]"])        return [UIColor colorWithRed:0.55 green:0.72 blue:0.92 alpha:1.0]; // cornflower
+    if ([content hasPrefix:@"[SESSION]"])     return [UIColor colorWithRed:0.38 green:0.68 blue:0.98 alpha:1.0]; // bright sky blue
+    if ([content hasPrefix:@"[CLEANUP]"])     return [UIColor colorWithRed:0.82 green:0.72 blue:0.56 alpha:1.0]; // warm tan
+    if ([content hasPrefix:@"[LOG]"])         return [UIColor colorWithRed:0.60 green:0.62 blue:0.68 alpha:1.0]; // muted gray
 
     // Verbose subsystem labels
-    if ([line hasPrefix:@"[SETTINGS]"])    return [UIColor colorWithRed:0.72 green:0.88 blue:1.00 alpha:1.0]; // ice blue (distinct from SESSION)
-    if ([line hasPrefix:@"[APP]"])         return [UIColor colorWithRed:0.90 green:0.82 blue:0.52 alpha:1.0]; // warm gold
-    if ([line hasPrefix:@"[INIT]"])        return [UIColor colorWithRed:0.60 green:0.40 blue:0.92 alpha:1.0]; // medium purple
-    if ([line hasPrefix:@"[AXONLITE]"])    return [UIColor colorWithRed:0.72 green:0.98 blue:0.28 alpha:1.0]; // chartreuse
-    if ([line hasPrefix:@"[THEMER]"])      return [UIColor colorWithRed:0.92 green:0.35 blue:0.85 alpha:1.0]; // fuchsia
-    if ([line hasPrefix:@"[TYPEBANNER]"])  return [UIColor colorWithRed:1.00 green:0.68 blue:0.48 alpha:1.0]; // warm peach
-    if ([line hasPrefix:@"[RSSI]"])        return [UIColor colorWithRed:0.18 green:0.58 blue:0.95 alpha:1.0]; // cobalt blue
-    if ([line hasPrefix:@"[KILLALL]"])     return [UIColor colorWithRed:0.88 green:0.18 blue:0.22 alpha:1.0]; // dark crimson
-    if ([line hasPrefix:@"[INSTALLER]"])   return [UIColor colorWithRed:0.22 green:0.78 blue:0.88 alpha:1.0]; // cerulean
-    if ([line hasPrefix:@"[UPDATE]"])      return [UIColor colorWithRed:0.28 green:0.88 blue:0.70 alpha:1.0]; // seafoam
-    if ([line hasPrefix:@"[NANO"])         return [UIColor colorWithRed:0.22 green:0.90 blue:0.82 alpha:1.0]; // turquoise ([NANO] and [NANO-PROBE])
-    if ([line hasPrefix:@"[RemoteCall]"])  return [UIColor colorWithRed:0.72 green:0.68 blue:0.58 alpha:1.0]; // warm slate
-    if ([line hasPrefix:@"[kutils]"])      return [UIColor colorWithRed:0.90 green:0.50 blue:0.28 alpha:1.0]; // rust orange
-    if ([line hasPrefix:@"[SBC]"])         return [UIColor colorWithRed:0.80 green:0.58 blue:0.90 alpha:1.0]; // lavender
-    if ([line hasPrefix:@"[STATBAR]"])     return [UIColor colorWithRed:0.56 green:0.88 blue:0.64 alpha:1.0]; // mint
-    if ([line hasPrefix:@"[POWERCUFF]"])   return [UIColor colorWithRed:0.96 green:0.50 blue:0.50 alpha:1.0]; // coral
-    if ([line hasPrefix:@"[DST"])          return [UIColor colorWithRed:0.40 green:0.90 blue:0.88 alpha:1.0]; // teal ([DST] [DST:APPLIB] etc.)
-    if ([line hasPrefix:@"[OTA]"])         return [UIColor colorWithRed:1.00 green:0.88 blue:0.40 alpha:1.0]; // amber
-    if ([line hasPrefix:@"[ota]"])         return [UIColor colorWithRed:1.00 green:0.88 blue:0.40 alpha:1.0]; // amber (lowercase variant)
-    if ([line hasPrefix:@"[RESPRING]"])    return [UIColor colorWithRed:1.00 green:0.72 blue:0.30 alpha:1.0]; // orange
-    if ([line hasPrefix:@"[5ICON]"])       return [UIColor colorWithRed:0.98 green:0.95 blue:0.55 alpha:1.0]; // pale yellow
-    if ([line hasPrefix:@"[KRW]"])         return [UIColor colorWithRed:1.00 green:0.55 blue:0.70 alpha:1.0]; // pink
-    if ([line hasPrefix:@"[PERSIST]"])     return [UIColor colorWithRed:0.70 green:0.75 blue:0.85 alpha:1.0]; // steel blue
-    if ([line hasPrefix:@"[HSSPACE]"])     return [UIColor colorWithRed:0.50 green:0.95 blue:0.42 alpha:1.0]; // spring green
-    if ([line hasPrefix:@"[DOCKSPACE]"])   return [UIColor colorWithRed:0.50 green:0.95 blue:0.42 alpha:1.0]; // spring green
-    if ([line hasPrefix:@"[HSSCALE]"])     return [UIColor colorWithRed:0.50 green:0.95 blue:0.42 alpha:1.0]; // spring green
-    if ([line hasPrefix:@"[DOCKSCALE]"])   return [UIColor colorWithRed:0.50 green:0.95 blue:0.42 alpha:1.0]; // spring green
-    if ([line hasPrefix:@"[LAYOUT26]"])    return [UIColor colorWithRed:0.50 green:0.95 blue:0.42 alpha:1.0]; // spring green
+    if ([content hasPrefix:@"[SETTINGS]"])    return [UIColor colorWithRed:0.72 green:0.88 blue:1.00 alpha:1.0]; // ice blue (distinct from SESSION)
+    if ([content hasPrefix:@"[APP]"])         return [UIColor colorWithRed:0.90 green:0.82 blue:0.52 alpha:1.0]; // warm gold
+    if ([content hasPrefix:@"[INIT]"])        return [UIColor colorWithRed:0.60 green:0.40 blue:0.92 alpha:1.0]; // medium purple
+    if ([content hasPrefix:@"[AXONLITE]"])    return [UIColor colorWithRed:0.72 green:0.98 blue:0.28 alpha:1.0]; // chartreuse
+    if ([content hasPrefix:@"[THEMER]"])      return [UIColor colorWithRed:0.92 green:0.35 blue:0.85 alpha:1.0]; // fuchsia
+    if ([content hasPrefix:@"[TYPEBANNER]"])  return [UIColor colorWithRed:1.00 green:0.68 blue:0.48 alpha:1.0]; // warm peach
+    if ([content hasPrefix:@"[RSSI]"])        return [UIColor colorWithRed:0.18 green:0.58 blue:0.95 alpha:1.0]; // cobalt blue
+    if ([content hasPrefix:@"[KILLALL]"])     return [UIColor colorWithRed:0.88 green:0.18 blue:0.22 alpha:1.0]; // dark crimson
+    if ([content hasPrefix:@"[INSTALLER]"])   return [UIColor colorWithRed:0.22 green:0.78 blue:0.88 alpha:1.0]; // cerulean
+    if ([content hasPrefix:@"[UPDATE]"])      return [UIColor colorWithRed:0.28 green:0.88 blue:0.70 alpha:1.0]; // seafoam
+    if ([content hasPrefix:@"[NANO"])         return [UIColor colorWithRed:0.22 green:0.90 blue:0.82 alpha:1.0]; // turquoise ([NANO] and [NANO-PROBE])
+    if ([content hasPrefix:@"[RemoteCall]"])  return [UIColor colorWithRed:0.30 green:0.80 blue:1.00 alpha:1.0]; // vivid azure
+    if ([content hasPrefix:@"[SBX]"])         return [UIColor colorWithRed:0.95 green:0.52 blue:0.88 alpha:1.0]; // hot magenta-pink
+    if ([content hasPrefix:@"[kutils]"])      return [UIColor colorWithRed:0.90 green:0.50 blue:0.28 alpha:1.0]; // rust orange
+    if ([content hasPrefix:@"[SBC]"])         return [UIColor colorWithRed:0.80 green:0.58 blue:0.90 alpha:1.0]; // lavender
+    if ([content hasPrefix:@"[STATBAR]"])     return [UIColor colorWithRed:0.56 green:0.88 blue:0.64 alpha:1.0]; // mint
+    if ([content hasPrefix:@"[POWERCUFF]"])   return [UIColor colorWithRed:0.96 green:0.50 blue:0.50 alpha:1.0]; // coral
+    if ([content hasPrefix:@"[DST"])          return [UIColor colorWithRed:0.40 green:0.90 blue:0.88 alpha:1.0]; // teal ([DST] [DST:APPLIB] etc.)
+    if ([content hasPrefix:@"[OTA]"])         return [UIColor colorWithRed:1.00 green:0.88 blue:0.40 alpha:1.0]; // amber
+    if ([content hasPrefix:@"[ota]"])         return [UIColor colorWithRed:1.00 green:0.88 blue:0.40 alpha:1.0]; // amber (lowercase variant)
+    if ([content hasPrefix:@"[RESPRING]"])    return [UIColor colorWithRed:1.00 green:0.72 blue:0.30 alpha:1.0]; // orange
+    if ([content hasPrefix:@"[5ICON]"])       return [UIColor colorWithRed:0.98 green:0.95 blue:0.55 alpha:1.0]; // pale yellow
+    if ([content hasPrefix:@"[KRW]"])         return [UIColor colorWithRed:1.00 green:0.55 blue:0.70 alpha:1.0]; // pink
+    if ([content hasPrefix:@"[PERSIST]"])     return [UIColor colorWithRed:0.70 green:0.75 blue:0.85 alpha:1.0]; // steel blue
+    if ([content hasPrefix:@"[HSSPACE]"])     return [UIColor colorWithRed:0.50 green:0.95 blue:0.42 alpha:1.0]; // spring green
+    if ([content hasPrefix:@"[DOCKSPACE]"])   return [UIColor colorWithRed:0.50 green:0.95 blue:0.42 alpha:1.0]; // spring green
+    if ([content hasPrefix:@"[HSSCALE]"])     return [UIColor colorWithRed:0.50 green:0.95 blue:0.42 alpha:1.0]; // spring green
+    if ([content hasPrefix:@"[DOCKSCALE]"])   return [UIColor colorWithRed:0.50 green:0.95 blue:0.42 alpha:1.0]; // spring green
+    if ([content hasPrefix:@"[LAYOUT26]"])    return [UIColor colorWithRed:0.50 green:0.95 blue:0.42 alpha:1.0]; // spring green
+    if ([content hasPrefix:@"[GRAVITY]"])     return [UIColor colorWithRed:0.60 green:0.80 blue:1.00 alpha:1.0]; // sky blue
+    if ([content hasPrefix:@"[+]"])           return [UIColor colorWithRed:0.45 green:0.82 blue:0.72 alpha:1.0]; // jade green
+    if ([content hasPrefix:@"[i]"])           return [UIColor colorWithRed:0.58 green:0.72 blue:0.92 alpha:1.0]; // soft periwinkle
+    if ([content hasPrefix:@"[-]"])           return [UIColor colorWithRed:0.92 green:0.45 blue:0.38 alpha:1.0]; // warm red
 
     return [UIColor colorWithWhite:0.86 alpha:1.0];
 }
@@ -358,10 +404,10 @@ static UIColor *colorForLogLine(NSString *line) {
 
 - (void)setup {
     self.editable   = NO;
-    self.font       = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
-    self.backgroundColor = [UIColor colorWithRed:0.02 green:0.05 blue:0.06 alpha:1.0];
-    self.textColor  = UIColor.whiteColor;
-    self.textContainerInset = UIEdgeInsetsMake(12, 10, 12, 10);
+    self.font       = [UIFont systemFontOfSize:13.5 weight:UIFontWeightRegular];
+    self.backgroundColor = [UIColor colorWithRed:0.04 green:0.05 blue:0.07 alpha:1.0];
+    self.textColor  = [UIColor colorWithWhite:0.88 alpha:1.0];
+    self.textContainerInset = UIEdgeInsetsMake(14, 16, 24, 16);
     self.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentAlways;
     _followTail = YES;
 
@@ -384,23 +430,51 @@ static UIColor *colorForLogLine(NSString *line) {
 }
 
 - (NSMutableAttributedString *)buildAttrStringForText:(NSString *)text {
-    UIFont *font = self.font ?: [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    UIFont *font = self.font ?: [UIFont systemFontOfSize:13.5 weight:UIFontWeightRegular];
+    UIFont *boldFont = [UIFont systemFontOfSize:13.5 weight:UIFontWeightSemibold];
     NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
-    para.lineSpacing = 3.0;
+    para.lineSpacing = 5.0;
+    para.paragraphSpacing = 1.0;
 
     NSArray<NSString *> *lines = [text componentsSeparatedByString:@"\n"];
     NSMutableAttributedString *attr = [[NSMutableAttributedString alloc] init];
     for (NSUInteger i = 0; i < lines.count; i++) {
-        NSString *line = lines[i];
+        NSString *rawLine = lines[i];
         // skip the trailing empty element that follows the last \n
-        if (i + 1 == lines.count && line.length == 0) break;
-        NSString *lineText = [line stringByAppendingString:@"\n"];
-        NSDictionary *attrs = @{
-            NSFontAttributeName:            font,
-            NSForegroundColorAttributeName: colorForLogLine(line),
-            NSParagraphStyleAttributeName:  para,
-        };
-        [attr appendAttributedString:[[NSAttributedString alloc] initWithString:lineText attributes:attrs]];
+        if (i + 1 == lines.count && rawLine.length == 0) break;
+
+        UIColor *color = colorForLogLine(rawLine);
+        NSString *display = rawLine;
+        if (display.length > 15 && [display characterAtIndex:0] == '[') {
+            NSRange tsClose = [display rangeOfString:@"] "];
+            if (tsClose.location != NSNotFound && tsClose.location < 20) {
+                display = [display substringFromIndex:tsClose.location + 2];
+            }
+        }
+
+        NSRange tagRange = NSMakeRange(NSNotFound, 0);
+        if (display.length > 2 && [display characterAtIndex:0] == '[') {
+            NSRange tagClose = [display rangeOfString:@"] "];
+            if (tagClose.location != NSNotFound && tagClose.location < 20) {
+                NSString *tag = [display substringWithRange:NSMakeRange(1, tagClose.location - 1)];
+                NSString *rest = [display substringFromIndex:tagClose.location + 2];
+                display = [NSString stringWithFormat:@"%@ %@", tag, rest];
+                tagRange = NSMakeRange(0, tag.length);
+            }
+        }
+
+        NSString *lineText = [display stringByAppendingString:@"\n"];
+        NSMutableAttributedString *lineAttr = [[NSMutableAttributedString alloc]
+            initWithString:lineText
+                attributes:@{
+                    NSFontAttributeName:            font,
+                    NSForegroundColorAttributeName: color,
+                    NSParagraphStyleAttributeName:  para,
+                }];
+        if (tagRange.location != NSNotFound && NSMaxRange(tagRange) <= lineText.length) {
+            [lineAttr addAttribute:NSFontAttributeName value:boldFont range:tagRange];
+        }
+        [attr appendAttributedString:lineAttr];
     }
     return attr;
 }

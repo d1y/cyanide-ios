@@ -8,8 +8,10 @@
 #import "QueueReviewViewController.h"
 #import "../SettingsViewController.h"
 #import "../LogTextView.h"
+#import <sys/utsname.h>
 
 @interface InstallProgressViewController ()
+@property (nonatomic, strong) UILabel *bannerLabel;
 @property (nonatomic, strong) LogTextView *logView;
 @property (nonatomic, strong) UIActivityIndicatorView *spinner;
 @property (nonatomic, strong) UILabel *statusLabel;
@@ -23,61 +25,88 @@
 {
     [super viewDidLoad];
     self.overrideUserInterfaceStyle = UIUserInterfaceStyleDark;
-    self.view.backgroundColor = [UIColor colorWithRed:0.02 green:0.05 blue:0.06 alpha:1.0];
+    UIColor *bg = [UIColor colorWithRed:0.04 green:0.05 blue:0.07 alpha:1.0];
+    self.view.backgroundColor = bg;
     self.title = @"Activity";
-    self.modalInPresentation = NO; // user can swipe to dismiss any time
+    self.modalInPresentation = NO;
+
+    self.bannerLabel = [[UILabel alloc] init];
+    self.bannerLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    self.bannerLabel.numberOfLines = 0;
+    self.bannerLabel.font = [UIFont monospacedSystemFontOfSize:11.5 weight:UIFontWeightRegular];
+    self.bannerLabel.textColor = [UIColor colorWithWhite:0.86 alpha:1.0];
+    self.bannerLabel.backgroundColor = [UIColor colorWithRed:0.06 green:0.07 blue:0.10 alpha:1.0];
+    self.bannerLabel.textAlignment = NSTextAlignmentLeft;
+    self.bannerLabel.attributedText = [self buildBannerText];
+    self.bannerLabel.layer.cornerRadius = 10.0;
+    self.bannerLabel.clipsToBounds = YES;
+    [self.view addSubview:self.bannerLabel];
+
+    UIView *separator = [[UIView alloc] init];
+    separator.translatesAutoresizingMaskIntoConstraints = NO;
+    separator.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.07];
+    [self.view addSubview:separator];
 
     self.logView = [[LogTextView alloc] initWithFrame:CGRectZero];
     self.logView.translatesAutoresizingMaskIntoConstraints = NO;
     [self.view addSubview:self.logView];
 
-    UIView *footer = [[UIView alloc] init];
+    UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemUltraThinMaterialDark];
+    UIVisualEffectView *footer = [[UIVisualEffectView alloc] initWithEffect:blur];
     footer.translatesAutoresizingMaskIntoConstraints = NO;
-    footer.backgroundColor = [UIColor colorWithRed:0.01 green:0.03 blue:0.04 alpha:1.0];
     [self.view addSubview:footer];
 
-    UIView *divider = [[UIView alloc] init];
-    divider.translatesAutoresizingMaskIntoConstraints = NO;
-    divider.backgroundColor = [UIColor.whiteColor colorWithAlphaComponent:0.08];
-    [footer addSubview:divider];
+    UIView *footerDivider = [[UIView alloc] init];
+    footerDivider.translatesAutoresizingMaskIntoConstraints = NO;
+    footerDivider.backgroundColor = [UIColor colorWithWhite:1.0 alpha:0.07];
+    [footer.contentView addSubview:footerDivider];
 
     self.spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
     self.spinner.translatesAutoresizingMaskIntoConstraints = NO;
-    self.spinner.color = UIColor.whiteColor;
+    self.spinner.color = [UIColor colorWithWhite:0.75 alpha:1.0];
     [self.spinner startAnimating];
-    [footer addSubview:self.spinner];
+    [footer.contentView addSubview:self.spinner];
 
     self.statusLabel = [[UILabel alloc] init];
     self.statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
-    self.statusLabel.text = @"Exploit running — recommended to wait here until complete.";
-    self.statusLabel.font = [UIFont systemFontOfSize:13.0];
-    self.statusLabel.textColor = [UIColor.whiteColor colorWithAlphaComponent:0.72];
+    self.statusLabel.text = @"Running — stay here until complete.";
+    self.statusLabel.font = [UIFont systemFontOfSize:13.5 weight:UIFontWeightRegular];
+    self.statusLabel.textColor = [UIColor colorWithWhite:0.55 alpha:1.0];
     self.statusLabel.numberOfLines = 1;
     self.statusLabel.adjustsFontSizeToFitWidth = YES;
     self.statusLabel.minimumScaleFactor = 0.8;
-    [footer addSubview:self.statusLabel];
+    [footer.contentView addSubview:self.statusLabel];
 
     [NSLayoutConstraint activateConstraints:@[
-        [self.logView.topAnchor      constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [self.bannerLabel.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12.0],
+        [self.bannerLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:12.0],
+        [self.bannerLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-12.0],
+
+        [separator.topAnchor constraintEqualToAnchor:self.bannerLabel.bottomAnchor constant:12.0],
+        [separator.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [separator.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [separator.heightAnchor constraintEqualToConstant:0.5],
+
+        [self.logView.topAnchor      constraintEqualToAnchor:separator.bottomAnchor],
         [self.logView.leadingAnchor  constraintEqualToAnchor:self.view.leadingAnchor],
         [self.logView.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
         [self.logView.bottomAnchor   constraintEqualToAnchor:footer.topAnchor],
 
         [footer.leadingAnchor  constraintEqualToAnchor:self.view.leadingAnchor],
         [footer.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
-        [footer.bottomAnchor   constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
-        [footer.heightAnchor   constraintEqualToConstant:54.0],
+        [footer.bottomAnchor   constraintEqualToAnchor:self.view.bottomAnchor],
+        [footer.heightAnchor   constraintEqualToConstant:64.0],
 
-        [divider.topAnchor      constraintEqualToAnchor:footer.topAnchor],
-        [divider.leadingAnchor  constraintEqualToAnchor:footer.leadingAnchor],
-        [divider.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor],
-        [divider.heightAnchor   constraintEqualToConstant:0.5],
+        [footerDivider.topAnchor      constraintEqualToAnchor:footer.topAnchor],
+        [footerDivider.leadingAnchor  constraintEqualToAnchor:footer.leadingAnchor],
+        [footerDivider.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor],
+        [footerDivider.heightAnchor   constraintEqualToConstant:0.5],
 
-        [self.spinner.leadingAnchor      constraintEqualToAnchor:footer.leadingAnchor constant:16.0],
-        [self.spinner.centerYAnchor      constraintEqualToAnchor:footer.centerYAnchor],
+        [self.spinner.leadingAnchor      constraintEqualToAnchor:footer.leadingAnchor constant:20.0],
+        [self.spinner.centerYAnchor      constraintEqualToAnchor:footer.safeAreaLayoutGuide.topAnchor constant:22.0],
         [self.statusLabel.leadingAnchor  constraintEqualToAnchor:self.spinner.trailingAnchor constant:12.0],
-        [self.statusLabel.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor constant:-16.0],
-        [self.statusLabel.centerYAnchor  constraintEqualToAnchor:footer.centerYAnchor],
+        [self.statusLabel.trailingAnchor constraintEqualToAnchor:footer.trailingAnchor constant:-20.0],
+        [self.statusLabel.centerYAnchor  constraintEqualToAnchor:self.spinner.centerYAnchor],
     ]];
 
     self.hideOrDoneButton = [[UIBarButtonItem alloc] initWithTitle:@"Hide"
@@ -108,12 +137,44 @@
     NSString *message = note.userInfo[kSettingsActionsDidCompleteMessageKey];
     self.statusLabel.text = message.length
         ? message
-        : (success ? @"Done. All tweaks applied in-session." : @"Failed. Check the log for details.");
+        : (success ? @"All tweaks applied in-session." : @"Failed — check the log above.");
+    self.statusLabel.font = [UIFont systemFontOfSize:13.5 weight:UIFontWeightSemibold];
     self.statusLabel.textColor = success
-        ? [UIColor colorWithRed:0.45 green:0.85 blue:0.55 alpha:1.0]
-        : [UIColor colorWithRed:1.0 green:0.42 blue:0.35 alpha:1.0];
+        ? [UIColor colorWithRed:0.38 green:0.90 blue:0.55 alpha:1.0]
+        : [UIColor colorWithRed:1.0 green:0.38 blue:0.32 alpha:1.0];
     self.title = success ? @"Complete" : @"Failed";
     self.hideOrDoneButton.title = @"Done";
+}
+
+- (NSAttributedString *)buildBannerText {
+    NSDictionary *info = NSBundle.mainBundle.infoDictionary;
+    NSString *shortVer = info[@"CFBundleShortVersionString"] ?: @"?";
+    NSString *build = info[@"CFBundleVersion"] ?: @"?";
+
+    struct utsname u = {0};
+    const char *machine = "device";
+    if (uname(&u) == 0 && u.machine[0]) machine = u.machine;
+    NSString *ios = UIDevice.currentDevice.systemVersion ?: @"?";
+
+    NSString *banner = [NSString stringWithFormat:
+        @"     ╭───────────╮\n"
+        @"     │ ▄▄▄▄▄▄▄▄▄ │\n"
+        @"     ├───────────┤\n"
+        @"     │ ░░░░░░░░░ │   C Y A N I D E  X\n"
+        @"     │ ░░░ X ░░░ │   %@ (%@)\n"
+        @"     │ ░░░░░░░░░ │   %s • iOS %@\n"
+        @"     │ ░░░░░░░░░ │\n"
+        @"     ╰───────────╯",
+        shortVer, build, machine, ios];
+
+    NSMutableParagraphStyle *para = [[NSMutableParagraphStyle alloc] init];
+    para.lineSpacing = 2.0;
+
+    return [[NSAttributedString alloc] initWithString:banner attributes:@{
+        NSFontAttributeName: [UIFont monospacedSystemFontOfSize:11.5 weight:UIFontWeightRegular],
+        NSForegroundColorAttributeName: [UIColor colorWithWhite:0.86 alpha:1.0],
+        NSParagraphStyleAttributeName: para,
+    }];
 }
 
 - (void)didTapDone

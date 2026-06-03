@@ -13,6 +13,7 @@
 
 void log_init(void);
 void log_write(const char *msg);
+void log_write_raw_no_timestamp(const char *msg);
 void log_set_verbose(BOOL enabled);
 BOOL log_verbose_enabled(void);
 void log_user(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
