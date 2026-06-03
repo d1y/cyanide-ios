@@ -12,6 +12,7 @@
 static NSString * const kPackageCellID         = @"PackageCell";
 static NSString * const kGroupByCategoryDefault = @"installer.groupByCategory";
 static NSString * const kTipsExpandedDefault    = @"installer.tipsExpanded";
+static const BOOL kShowInstallerTipsHeader = NO;
 
 @interface PackagesViewController () <UISearchResultsUpdating>
 @property (nonatomic, copy)   NSArray<Package *> *allPackagesSorted;
@@ -195,6 +196,11 @@ static NSString * const kTipsExpandedDefault    = @"installer.tipsExpanded";
 
 - (void)installTipsHeader
 {
+    if (!kShowInstallerTipsHeader) {
+        self.tableView.tableHeaderView = nil;
+        return;
+    }
+
     CGFloat width = self.tableView.bounds.size.width;
     if (width <= 0) width = UIScreen.mainScreen.bounds.size.width;
 
@@ -438,9 +444,7 @@ static NSString * const kTipsExpandedDefault    = @"installer.tipsExpanded";
 
 - (CGFloat)tableView:(UITableView *)tableView heightForHeaderInSection:(NSInteger)section
 {
-    // Tighten the first category header so it doesn't sit far below the tips
-    // card. Subsequent category headers keep their natural spacing.
-    if (section == 0) return 26.0;
+    if (kShowInstallerTipsHeader && section == 0) return 26.0;
     return UITableViewAutomaticDimension;
 }
 
