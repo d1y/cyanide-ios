@@ -27,31 +27,36 @@ jobs:
         id: tag
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Build IPA
-        run: ./scripts/build.sh
+      - name: Build IPA with release script
+        run: VERSION="${{ steps.tag.outputs.version }}" ./scripts/release.sh
 
       - name: Verify IPA exists
         run: |
-          IPA="build/Cyanide-${{ steps.tag.outputs.version }}.ipa"
-          if [ ! -f "$IPA" ]; then
-            echo "error: $IPA not found" >&2
-            echo "Make sure MARKETING_VERSION matches tag ${{ github.ref_name }}" >&2
+          VERSION="${{ steps.tag.outputs.version }}"
+          VERSIONED_IPA="build/Cyanide-${VERSION}.ipa"
+          LINK_IPA="build/Cyanide.ipa"
+          if [ ! -f "$VERSIONED_IPA" ]; then
+            echo "error: $VERSIONED_IPA not found" >&2
             exit 1
           fi
-          ls -lh "$IPA"
+          if [ ! -f "$LINK_IPA" ]; then
+            echo "error: $LINK_IPA not found" >&2
+            exit 1
+          fi
+          ls -lh "$VERSIONED_IPA" "$LINK_IPA"
+
+      - name: Prepare release asset
+        run: |
+          cp build/Cyanide.ipa build/cyanidex.ipa
+          ls -lh build/cyanidex.ipa
 
       - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION="${{ steps.tag.outputs.version }}"
-          IPA="build/Cyanide-${VERSION}.ipa"
-          TAG="${{ github.ref_name }}"
-          REPO="${{ github.repository }}"
-
-          gh release create "$TAG" "$IPA" \
-            --repo "$REPO" \
-            --verify-tag \
-            --latest \
-            --title "Cyanide ${TAG}" \
-            --generate-notes
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Cyanide ${{ github.ref_name }}
+          files: build/cyanidex.ipa
+          generate_release_notes: true
+          make_latest: true
+          overwrite_files: true
+          fail_on_unmatched_files: true

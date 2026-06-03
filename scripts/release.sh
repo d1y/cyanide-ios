@@ -12,6 +12,7 @@
 #   BUMP=none  ./scripts/release.sh "..."               # leave MARKETING_VERSION as-is
 #   VERSION=1.5.3 ./scripts/release.sh "..."            # set an explicit version
 #   TAG=v1.2.3 ./scripts/release.sh "..."               # override tag (defaults to v${VERSION})
+#   RELEASE_BUILD_ONLY=1 VERSION=1.5.3 ./scripts/release.sh  # build + refresh metadata only
 #
 # The release script owns versioning end-to-end: it edits MARKETING_VERSION and
 # CURRENT_PROJECT_VERSION in the xcodeproj, commits the bump (along with any
@@ -29,11 +30,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-if ! command -v gh >/dev/null; then
+RELEASE_BUILD_ONLY="${RELEASE_BUILD_ONLY:-0}"
+if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+    RELEASE_BUILD_ONLY=1
+fi
+
+if [ "$RELEASE_BUILD_ONLY" != "1" ] && ! command -v gh >/dev/null; then
     echo "error: gh CLI not installed (brew install gh)" >&2
     exit 1
 fi
-if ! gh auth status >/dev/null 2>&1; then
+if [ "$RELEASE_BUILD_ONLY" != "1" ] && ! gh auth status >/dev/null 2>&1; then
     echo "error: gh not authenticated (gh auth login)" >&2
     exit 1
 fi
@@ -277,6 +283,13 @@ with open(path, "w") as f:
     json.dump(data, f, indent=2)
     f.write("\n")
 PY
+fi
+
+if [ "$RELEASE_BUILD_ONLY" = "1" ]; then
+    echo "==> release build only; skipping commit, push, tag, and GitHub Release"
+    echo "==> IPA: $IPA"
+    echo "==> IPA symlink: $PWD/build/Cyanide.ipa"
+    exit 0
 fi
 
 # 3. Commit if there's anything to commit: pre-existing tree changes, the
