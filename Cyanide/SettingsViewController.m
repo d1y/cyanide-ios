@@ -6468,6 +6468,7 @@ createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
 @property (nonatomic, strong) NSURL *sblDownloadURL;
 @property (nonatomic, strong) NSURLRequest *sblDownloadRequest;
 @property (nonatomic, copy) NSString *sblDownloadDisplayName;
+@property (nonatomic, weak) UIStackView *sblOnlineDownloadsStack;
 @property (nonatomic, copy) NSString *pendingThemeImportMode;
 @property (nonatomic, copy) NSString *pendingSnowBoardLiteImportName;
 @end
@@ -8119,6 +8120,14 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
                    @"drain — with no guaranteed feature in return. Leave "
                    @"off unless you're a developer actively testing.";
         }
+        if ((RootSection)section == RootSectionWarning) {
+            NSString *version = settings_app_version_string();
+            NSString *build = settings_app_build_string();
+            if (build.length && ![build isEqualToString:@"unknown"]) {
+                return [NSString stringWithFormat:@"Cyanide X v%@ (%@)", version, build];
+            }
+            return [NSString stringWithFormat:@"Cyanide X v%@", version];
+        }
         return nil;
     }
     NSInteger s = self.underlyingSection;
@@ -8773,9 +8782,11 @@ static NSString * const kTelegramLogoSVG =
 
         NSString *name = [theme[@"name"] isKindOfClass:NSString.class] ? theme[@"name"] : @"";
         NSString *sourceName = [theme[@"sourceName"] isKindOfClass:NSString.class] ? theme[@"sourceName"] : @"";
+        NSString *onlineTitle = [theme[@"onlineTitle"] isKindOfClass:NSString.class] ? theme[@"onlineTitle"] : @"";
         if (title.length > 0 &&
             ([name caseInsensitiveCompare:title] == NSOrderedSame ||
-             [sourceName caseInsensitiveCompare:title] == NSOrderedSame)) {
+             [sourceName caseInsensitiveCompare:title] == NSOrderedSame ||
+             [onlineTitle caseInsensitiveCompare:title] == NSOrderedSame)) {
             return theme;
         }
     }
@@ -8809,6 +8820,22 @@ static NSString * const kTelegramLogoSVG =
                                         displayName:(name.length ? name : @"Online Theme")];
 }
 
+- (void)refreshSnowBoardLiteOnlineDownloadsPopup
+{
+    UIStackView *stack = self.sblOnlineDownloadsStack;
+    if (!stack) return;
+
+    for (UIView *view in [stack.arrangedSubviews copy]) {
+        [stack removeArrangedSubview:view];
+        [view removeFromSuperview];
+    }
+    for (NSDictionary *item in [self snowBoardLiteOnlineDownloadItems]) {
+        [stack addArrangedSubview:[self snowBoardLiteOnlineDownloadCardForItem:item]];
+    }
+    [stack setNeedsLayout];
+    [stack.superview setNeedsLayout];
+}
+
 - (void)presentSnowBoardLiteOnlineDownloads
 {
     UIViewController *sheet = [[UIViewController alloc] init];
@@ -8829,14 +8856,14 @@ static NSString * const kTelegramLogoSVG =
     title.translatesAutoresizingMaskIntoConstraints = NO;
     title.text = @"Online Downloads";
     title.textColor = UIColor.labelColor;
-    title.font = [UIFont systemFontOfSize:28.0 weight:UIFontWeightBlack];
+    title.font = [UIFont systemFontOfSize:24.0 weight:UIFontWeightSemibold];
     [sheet.view addSubview:title];
 
     UILabel *subtitle = [[UILabel alloc] init];
     subtitle.translatesAutoresizingMaskIntoConstraints = NO;
     subtitle.text = @"Preview curated SnowBoard themes before downloading.";
     subtitle.textColor = UIColor.secondaryLabelColor;
-    subtitle.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
+    subtitle.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightRegular];
     subtitle.numberOfLines = 2;
     [sheet.view addSubview:subtitle];
 
@@ -8863,8 +8890,9 @@ static NSString * const kTelegramLogoSVG =
     UIStackView *stack = [[UIStackView alloc] init];
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     stack.axis = UILayoutConstraintAxisVertical;
-    stack.spacing = 12.0;
+    stack.spacing = 14.0;
     [scroll addSubview:stack];
+    self.sblOnlineDownloadsStack = stack;
 
     for (NSDictionary *item in [self snowBoardLiteOnlineDownloadItems]) {
         [stack addArrangedSubview:[self snowBoardLiteOnlineDownloadCardForItem:item]];
@@ -9889,6 +9917,7 @@ static NSString * const kTelegramLogoSVG =
 
     [self dismissLiveWPDownloadProgressController:progress completion:^{
         [self reloadSnowBoardLiteSectionAndQueue];
+        [self refreshSnowBoardLiteOnlineDownloadsPopup];
         NSDictionary *theme = settings_sbl_selected_theme();
         NSString *themeName = settings_snowboardlite_selected_theme_display_name();
         NSNumber *iconCount = theme[@"iconCount"] ?: @0;
@@ -9908,7 +9937,9 @@ static NSString * const kTelegramLogoSVG =
                                                               preferredStyle:UIAlertControllerStyleAlert];
         [ok addAction:[UIAlertAction actionWithTitle:@"OK"
                                                style:UIAlertActionStyleDefault
-                                             handler:nil]];
+                                             handler:^(__unused UIAlertAction *action) {
+            [self refreshSnowBoardLiteOnlineDownloadsPopup];
+        }]];
         [[self livewpPresentationHost] presentViewController:ok animated:YES completion:nil];
         log_user("[SBL] Theme download imported: %s\n", name.UTF8String ?: "theme");
     }];
@@ -11213,9 +11244,10 @@ void cyanide_present_contact(UIViewController *host)
                                                  accent:(UIColor *)accent
                                                  symbol:(NSString *)symbol
 {
+    (void)accent;
     UIView *tile = [[UIView alloc] init];
     tile.translatesAutoresizingMaskIntoConstraints = NO;
-    tile.backgroundColor = [accent colorWithAlphaComponent:0.16];
+    tile.backgroundColor = UIColor.tertiarySystemGroupedBackgroundColor;
     tile.layer.cornerRadius = 18.0;
     tile.layer.cornerCurve = kCACornerCurveContinuous;
     tile.clipsToBounds = YES;
@@ -11224,7 +11256,7 @@ void cyanide_present_contact(UIViewController *host)
         [UIImage systemImageNamed:@"photo.on.rectangle.angled"];
     UIImageView *imageView = [[UIImageView alloc] initWithImage:placeholder];
     imageView.translatesAutoresizingMaskIntoConstraints = NO;
-    imageView.tintColor = [accent colorWithAlphaComponent:0.70];
+    imageView.tintColor = UIColor.tertiaryLabelColor;
     imageView.contentMode = UIViewContentModeScaleAspectFit;
     [tile addSubview:imageView];
 
@@ -11254,16 +11286,15 @@ void cyanide_present_contact(UIViewController *host)
 
 - (UIControl *)snowBoardLiteOnlineDownloadCardForItem:(NSDictionary *)item
 {
-    UIColor *accent = item[@"color"] ?: UIColor.systemMintColor;
     NSDictionary *installedTheme = [self installedSnowBoardLiteOnlineThemeForItem:item];
     BOOL installed = installedTheme != nil;
     UIControl *card = [[UIControl alloc] init];
     card.translatesAutoresizingMaskIntoConstraints = NO;
-    card.backgroundColor = [accent colorWithAlphaComponent:0.10];
+    card.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
     card.layer.cornerRadius = 22.0;
     card.layer.cornerCurve = kCACornerCurveContinuous;
     card.layer.borderWidth = 1.0;
-    card.layer.borderColor = [accent colorWithAlphaComponent:0.22].CGColor;
+    card.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.16].CGColor;
     card.clipsToBounds = YES;
     [card addTarget:self action:@selector(snowBoardLiteOnlineDownloadTapped:)
    forControlEvents:UIControlEventTouchUpInside];
@@ -11298,54 +11329,59 @@ void cyanide_present_contact(UIViewController *host)
     }
     for (NSString *previewURL in previewURLs) {
         [previewStack addArrangedSubview:[self snowBoardLiteOnlinePreviewTileWithURLString:previewURL
-                                                                                    accent:accent
-                                                                                    symbol:item[@"symbol"]]];
+                                                                                    accent:nil
+                                                                                    symbol:nil]];
     }
-
-    UIView *iconPlate = [[UIView alloc] init];
-    iconPlate.translatesAutoresizingMaskIntoConstraints = NO;
-    iconPlate.backgroundColor = [accent colorWithAlphaComponent:0.18];
-    iconPlate.layer.cornerRadius = 16.0;
-    iconPlate.layer.cornerCurve = kCACornerCurveContinuous;
-    [card addSubview:iconPlate];
-
-    UIImage *symbolImage = [UIImage systemImageNamed:item[@"symbol"] ?: @"arrow.down.circle.fill"] ?:
-        [UIImage systemImageNamed:@"arrow.down.circle.fill"];
-    UIImageView *icon = [[UIImageView alloc] initWithImage:symbolImage];
-    icon.translatesAutoresizingMaskIntoConstraints = NO;
-    icon.tintColor = accent;
-    icon.contentMode = UIViewContentModeScaleAspectFit;
-    [iconPlate addSubview:icon];
 
     UILabel *title = [[UILabel alloc] init];
     title.translatesAutoresizingMaskIntoConstraints = NO;
     title.text = item[@"title"] ?: @"Theme";
     title.textColor = UIColor.labelColor;
-    title.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightBlack];
+    title.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightSemibold];
+    title.numberOfLines = 1;
     [card addSubview:title];
 
     UILabel *subtitle = [[UILabel alloc] init];
     subtitle.translatesAutoresizingMaskIntoConstraints = NO;
     subtitle.text = item[@"subtitle"] ?: @"";
     subtitle.textColor = UIColor.secondaryLabelColor;
-    subtitle.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    subtitle.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightRegular];
     subtitle.numberOfLines = 2;
     [card addSubview:subtitle];
 
     UIView *actionPlate = [[UIView alloc] init];
     actionPlate.translatesAutoresizingMaskIntoConstraints = NO;
-    actionPlate.backgroundColor = [accent colorWithAlphaComponent:installed ? 0.20 : 0.14];
-    actionPlate.layer.cornerRadius = 18.0;
+    actionPlate.backgroundColor = installed
+        ? [UIColor.systemGreenColor colorWithAlphaComponent:0.12]
+        : UIColor.systemBlueColor;
+    actionPlate.layer.cornerRadius = 17.0;
     actionPlate.layer.cornerCurve = kCACornerCurveContinuous;
+    actionPlate.layer.borderWidth = installed ? 1.0 : 0.0;
+    actionPlate.layer.borderColor = [UIColor.systemGreenColor colorWithAlphaComponent:0.38].CGColor;
+    actionPlate.userInteractionEnabled = NO;
     [card addSubview:actionPlate];
 
     UIImage *actionImage = [UIImage systemImageNamed:installed ? @"checkmark.circle.fill" : @"arrow.down.circle.fill"] ?:
         [UIImage systemImageNamed:@"arrow.down.circle.fill"];
     UIImageView *actionIcon = [[UIImageView alloc] initWithImage:actionImage];
     actionIcon.translatesAutoresizingMaskIntoConstraints = NO;
-    actionIcon.tintColor = installed ? UIColor.systemGreenColor : accent;
+    actionIcon.tintColor = installed ? UIColor.systemGreenColor : UIColor.whiteColor;
     actionIcon.contentMode = UIViewContentModeScaleAspectFit;
-    [actionPlate addSubview:actionIcon];
+    UILabel *actionLabel = [[UILabel alloc] init];
+    actionLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    actionLabel.text = installed ? @"Installed" : @"Download";
+    actionLabel.textColor = installed ? UIColor.systemGreenColor : UIColor.whiteColor;
+    actionLabel.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
+
+    UIStackView *actionStack = [[UIStackView alloc] init];
+    actionStack.translatesAutoresizingMaskIntoConstraints = NO;
+    actionStack.axis = UILayoutConstraintAxisHorizontal;
+    actionStack.alignment = UIStackViewAlignmentCenter;
+    actionStack.spacing = 5.0;
+    actionStack.userInteractionEnabled = NO;
+    [actionStack addArrangedSubview:actionIcon];
+    [actionStack addArrangedSubview:actionLabel];
+    [actionPlate addSubview:actionStack];
 
     [NSLayoutConstraint activateConstraints:@[
         [card.heightAnchor constraintGreaterThanOrEqualToConstant:270.0],
@@ -11361,29 +11397,21 @@ void cyanide_present_contact(UIViewController *host)
         [previewStack.bottomAnchor constraintEqualToAnchor:previewScroll.contentLayoutGuide.bottomAnchor],
         [previewStack.heightAnchor constraintEqualToAnchor:previewScroll.frameLayoutGuide.heightAnchor],
 
-        [iconPlate.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14.0],
-        [iconPlate.topAnchor constraintEqualToAnchor:previewScroll.bottomAnchor constant:12.0],
-        [iconPlate.widthAnchor constraintEqualToConstant:44.0],
-        [iconPlate.heightAnchor constraintEqualToConstant:44.0],
-
-        [icon.centerXAnchor constraintEqualToAnchor:iconPlate.centerXAnchor],
-        [icon.centerYAnchor constraintEqualToAnchor:iconPlate.centerYAnchor],
-        [icon.widthAnchor constraintEqualToConstant:22.0],
-        [icon.heightAnchor constraintEqualToConstant:22.0],
-
         [actionPlate.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-14.0],
-        [actionPlate.centerYAnchor constraintEqualToAnchor:iconPlate.centerYAnchor],
-        [actionPlate.widthAnchor constraintEqualToConstant:36.0],
-        [actionPlate.heightAnchor constraintEqualToConstant:36.0],
+        [actionPlate.topAnchor constraintEqualToAnchor:previewScroll.bottomAnchor constant:16.0],
+        [actionPlate.widthAnchor constraintEqualToConstant:112.0],
+        [actionPlate.heightAnchor constraintEqualToConstant:34.0],
 
-        [actionIcon.centerXAnchor constraintEqualToAnchor:actionPlate.centerXAnchor],
-        [actionIcon.centerYAnchor constraintEqualToAnchor:actionPlate.centerYAnchor],
-        [actionIcon.widthAnchor constraintEqualToConstant:23.0],
-        [actionIcon.heightAnchor constraintEqualToConstant:23.0],
+        [actionStack.centerXAnchor constraintEqualToAnchor:actionPlate.centerXAnchor],
+        [actionStack.centerYAnchor constraintEqualToAnchor:actionPlate.centerYAnchor],
+        [actionStack.leadingAnchor constraintGreaterThanOrEqualToAnchor:actionPlate.leadingAnchor constant:10.0],
+        [actionStack.trailingAnchor constraintLessThanOrEqualToAnchor:actionPlate.trailingAnchor constant:-10.0],
+        [actionIcon.widthAnchor constraintEqualToConstant:17.0],
+        [actionIcon.heightAnchor constraintEqualToConstant:17.0],
 
-        [title.leadingAnchor constraintEqualToAnchor:iconPlate.trailingAnchor constant:12.0],
+        [title.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:14.0],
         [title.trailingAnchor constraintLessThanOrEqualToAnchor:actionPlate.leadingAnchor constant:-12.0],
-        [title.topAnchor constraintEqualToAnchor:iconPlate.topAnchor constant:1.0],
+        [title.topAnchor constraintEqualToAnchor:previewScroll.bottomAnchor constant:13.0],
 
         [subtitle.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
         [subtitle.trailingAnchor constraintLessThanOrEqualToAnchor:actionPlate.leadingAnchor constant:-12.0],
