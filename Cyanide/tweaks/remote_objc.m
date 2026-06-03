@@ -241,25 +241,39 @@ uint64_t r_msg_main_raw(uint64_t obj, uint64_t sel,
     r_msg2(inv, "setTarget:", obj, 0, 0, 0);
     r_msg2(inv, "setSelector:", sel, 0, 0, 0);
 
+    bool argsOK = true;
     const void *argData[4] = { a0, a1, a2, a3 };
     size_t argSizes[4] = { a0Size, a1Size, a2Size, a3Size };
     for (uint64_t i = 0; i < maxUserArgs; i++) {
         size_t argBufLen = (argSizes[i] > 8) ? argSizes[i] : 8;
         uint64_t argBuf = do_remote_call_stable(R_TIMEOUT, "malloc",
                                                 argBufLen, 0, 0, 0, 0, 0, 0, 0);
-        if (!argBuf) continue;
-        if (r_write_remote_arg(argBuf, argData[i], argSizes[i], argBufLen))
+        if (!argBuf) {
+            argsOK = false;
+            continue;
+        }
+        if (r_write_remote_arg(argBuf, argData[i], argSizes[i], argBufLen)) {
             r_msg2(inv, "setArgument:atIndex:", argBuf, i + 2, 0, 0);
+        } else {
+            argsOK = false;
+        }
         r_free(argBuf);
+    }
+
+    if (!argsOK) {
+        r_msg2(inv, "release", 0, 0, 0, 0);
+        return 0;
     }
 
     r_msg2(inv, "retainArguments", 0, 0, 0, 0);
 
     uint64_t performSel = r_sel("performSelectorOnMainThread:withObject:waitUntilDone:");
     uint64_t invokeSel = r_sel("invoke");
-    if (performSel && invokeSel) {
-        r_msg(inv, performSel, invokeSel, 0, 1, 0);
+    if (!performSel || !invokeSel) {
+        r_msg2(inv, "release", 0, 0, 0, 0);
+        return 0;
     }
+    r_msg(inv, performSel, invokeSel, 0, 1, 0);
 
     uint64_t ret = 0;
     uint64_t retLen = r_msg2(sig, "methodReturnLength", 0, 0, 0, 0);
@@ -331,14 +345,26 @@ void r_msg2_main_async(uint64_t obj, const char *selName,
     r_msg2(inv, "setTarget:", obj, 0, 0, 0);
     r_msg2(inv, "setSelector:", sel, 0, 0, 0);
 
+    bool argsOK = true;
     uint64_t userArgs[4] = { a0, a1, a2, a3 };
     for (uint64_t i = 0; i < maxUserArgs; i++) {
         uint64_t argBuf = do_remote_call_stable(R_TIMEOUT, "malloc",
                                                 8, 0, 0, 0, 0, 0, 0, 0);
-        if (!argBuf) continue;
-        remote_write64(argBuf, userArgs[i]);
-        r_msg2(inv, "setArgument:atIndex:", argBuf, i + 2, 0, 0);
+        if (!argBuf) {
+            argsOK = false;
+            continue;
+        }
+        if (remote_write64(argBuf, userArgs[i])) {
+            r_msg2(inv, "setArgument:atIndex:", argBuf, i + 2, 0, 0);
+        } else {
+            argsOK = false;
+        }
         r_free(argBuf);
+    }
+
+    if (!argsOK) {
+        r_msg2(inv, "release", 0, 0, 0, 0);
+        return;
     }
 
     r_msg2(inv, "retainArguments", 0, 0, 0, 0);
@@ -397,25 +423,39 @@ bool r_msg2_main_struct_ret(uint64_t obj, const char *selName,
     r_msg2(inv, "setTarget:", obj, 0, 0, 0);
     r_msg2(inv, "setSelector:", sel, 0, 0, 0);
 
+    bool argsOK = true;
     const void *argData[4] = { a0, a1, a2, a3 };
     size_t argSizes[4] = { a0Size, a1Size, a2Size, a3Size };
     for (uint64_t i = 0; i < maxUserArgs; i++) {
         size_t argBufLen = (argSizes[i] > 8) ? argSizes[i] : 8;
         uint64_t argBuf = do_remote_call_stable(R_TIMEOUT, "malloc",
                                                 argBufLen, 0, 0, 0, 0, 0, 0, 0);
-        if (!argBuf) continue;
-        if (r_write_remote_arg(argBuf, argData[i], argSizes[i], argBufLen))
+        if (!argBuf) {
+            argsOK = false;
+            continue;
+        }
+        if (r_write_remote_arg(argBuf, argData[i], argSizes[i], argBufLen)) {
             r_msg2(inv, "setArgument:atIndex:", argBuf, i + 2, 0, 0);
+        } else {
+            argsOK = false;
+        }
         r_free(argBuf);
+    }
+
+    if (!argsOK) {
+        r_msg2(inv, "release", 0, 0, 0, 0);
+        return false;
     }
 
     r_msg2(inv, "retainArguments", 0, 0, 0, 0);
 
     uint64_t performSel = r_sel("performSelectorOnMainThread:withObject:waitUntilDone:");
     uint64_t invokeSel = r_sel("invoke");
-    if (performSel && invokeSel) {
-        r_msg(inv, performSel, invokeSel, 0, 1, 0);
+    if (!performSel || !invokeSel) {
+        r_msg2(inv, "release", 0, 0, 0, 0);
+        return false;
     }
+    r_msg(inv, performSel, invokeSel, 0, 1, 0);
 
     bool ok = false;
     uint64_t retLen = r_msg2(sig, "methodReturnLength", 0, 0, 0, 0);
