@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/zeroxjf/cyanide-ios/main/Cyanide/Assets.xcassets/AppIcon.appiconset/icon-ios-1024x1024.png" alt="Cyanide" width="160">
+  <img src="https://raw.githubusercontent.com/zeroxjf/cyanide/main/Cyanide/Assets.xcassets/AppIcon.appiconset/icon-ios-1024x1024.png" alt="Cyanide" width="160">
 </p>
 
 <h1 align="center">Cyanide</h1>
@@ -12,18 +12,37 @@ Objective-C iOS app, restructures the UI as an Installer/Settings split, and
 adds a few reliability fixes for repeated local testing. It does not ship
 the browser-delivered WebKit/dyld parts of the original DarkSword chain.
 
+-------------------
+
+## Fork Notice
+
+I forked from [`zeroxjf/cyanide`](https://github.com/zeroxjf/cyanide) starting at commit [e2f26d48e3b71d5a685ef30c3730ccb2b5d2d25a](https://github.com/zeroxjf/cyanide/tree/e2f26d48e3b71d5a685ef30c3730ccb2b5d2d25a)
+
+Then added and adjusted a set of
+my own tweaks and UI/DX changes on top of the original project.
+
+Tweaks added in this fork:
+
+- **NSBar**: compact network-speed pill with selectable status-bar positions.
+- **NiceBar Lite**: NiceBar-style status labels with configurable slots for
+  custom text, device stats, time/date, lunar date, traffic, and weather.
+- **SnowBoard Lite**: SnowBoard-style icon theme library with built-in iOS 6
+  theme, local folder/.zip/.deb import, URL import, and online theme downloads.
+- **LiveWP**: MP4/MOV/M4V video wallpaper for the lock screen and home screen.
+
+
+Links:
+
+- https://x.com/chenhonzhou/status/2061819860196475023
+- https://t.me/ios_cyanide
+
+-------------------
+
 ## Install
 
 Open this page on your iPhone/iPad and tap one of the buttons below.
 
-<p align="center">
-  <a href="https://celloserenity.github.io/altdirect/?url=https://raw.githubusercontent.com/zeroxjf/cyanide-ios/main/source.json" target="_blank">
-    <img src="https://github.com/CelloSerenity/altdirect/blob/main/assets/png/AltSource_Blue.png?raw=true" alt="Add AltSource" width="200">
-  </a>
-  <a href="https://github.com/zeroxjf/cyanide-ios/releases/latest" target="_blank">
-    <img src="https://github.com/CelloSerenity/altdirect/blob/main/assets/png/Download_Blue.png?raw=true" alt="Download .ipa" width="200">
-  </a>
-</p>
+[![](https://github.com/CelloSerenity/altdirect/blob/main/assets/png/Download_Blue.png?raw=true)](https://github.com/zeroxjf/cyanide/releases/latest)
 
 ## Tweaks
 
@@ -121,8 +140,18 @@ iOS/iPadOS 18.7.2 and 26.1. Later builds are outside this kernel exploit window.
 - [`wh1te4ever`](https://github.com/wh1te4ever): [`kfun` / `darksword-kexploit-fun`](https://github.com/wh1te4ever/darksword-kexploit-fun) — the RemoteCall implementation that lets a sideloaded app apply tweaks inside SpringBoard. Cyanide is a fork of this project.
 - [`rooootdev`](https://github.com/rooootdev): working kexploit behavior used to stabilize this fork.
 - [`neonmodder123`](https://github.com/neonmodder123): Web Respring method.
-- [`kolbicz`](https://github.com/kolbicz): OTA Disabler and SpringBoard tweaks.
+- [`kolbicz`](https://github.com/kolbicz): OTA Disabler, SpringBoard tweaks, and
+  the RemoteCall/CLSimulationManager GPS spoofer prototype used as the starting
+  point for Location Simulator.
+- `ezzuldinSt`: LSpoof app-side `CLLocationManager` spoofing, picker,
+  bookmarks, and route-simulation reference used while shaping Location
+  Simulator.
+- `YangJiiii` (`@duongduong0908`): EnsWilde and Disable Call Recording
+  BookRestore reference tools used while shaping Call Recording Sound.
+- `@Little_34306`: credited by the original call-recording projects for the
+  Disable Call Recording concept.
 - [`rpetrich`](https://github.com/rpetrich): Powercuff.
+- [`tomt000`](https://github.com/tomt000): [Dynamic Stage](https://havoc.app/package/dynamicstage) — the original Stage Manager-for-iPhone tweak whose split-view + scene-hosting design Dynamic Stage Lite re-implements over RemoteCall.
 
 ### UI inspiration
 
@@ -153,3 +182,20 @@ xcodebuild \
   CODE_SIGNING_ALLOWED=NO \
   build
 ```
+
+## License
+
+> https://github.com/zeroxjf/cyanide
+
+The open-source portion of this repository — everything outside the
+`Cyanide/tweaks/private/` submodule — is licensed under **AGPL-3.0**.
+See `LICENSE`.
+
+The `Cyanide/tweaks/private/` submodule points at a separate private
+repository containing the closed-source experimental tweak
+implementations. Those files are
+**All Rights Reserved**, distributed in compiled form only inside
+official Cyanide releases, and gated to active Patreon supporters at the
+Member tier or above. Public clones won't be able to fetch the
+submodule, and the experimental tweaks will be absent from local builds
+unless you re-implement them.
