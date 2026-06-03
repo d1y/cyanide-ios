@@ -49,7 +49,7 @@ static const NSInteger kSecDragCoefficient = 18;
         Package *statBar = [[Package alloc] initWithIdentifier:@"com.darksword.statbar"
                                            name:@"StatBar"
                                shortDescription:@"Battery temperature + free RAM overlay"
-                                longDescription:@"Installs an overlay window in SpringBoard that shows live battery temperature and free RAM next to the system status bar. Refreshes about once per second while the RemoteCall session is alive.\n\nConfigure Celsius/Fahrenheit and network speed visibility in the Settings tab."
+                                longDescription:@"Installs an overlay window in SpringBoard that shows live battery temperature and free RAM next to the system status bar. Refresh timing is adjustable so you can trade live updates for battery life.\n\nConfigure units, visible metrics, and refresh speed in the Settings tab."
                                         version:version
                                          author:@"zeroxjf"
                                        category:@"Status Bar"

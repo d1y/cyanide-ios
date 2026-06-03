@@ -766,6 +766,7 @@ NSString * const kSettingsStatBarShowCPU = @"StatBarShowCPU";
 NSString * const kSettingsStatBarShowRAM = @"StatBarShowRAM";
 NSString * const kSettingsStatBarShowNet = @"StatBarShowNet";
 NSString * const kSettingsStatBarShowLabels = @"StatBarShowLabels";
+NSString * const kSettingsStatBarRefreshRateSec = @"StatBarRefreshRateSec";
 
 NSString * const kSettingsNSBarEnabled = @"NSBarEnabled";
 NSString * const kSettingsNSBarPosition = @"NSBarPosition";
@@ -920,7 +921,7 @@ static const NSInteger kNanoPresetNewerMinQuickSwitch   = 6;
 static const NSInteger kNanoUIRowMin = 1;
 static const NSInteger kNanoUIRowMax = 999;
 static const useconds_t kStatBarLiveIntervalUS = 1000000;
-static const useconds_t kStatBarLiveBackgroundIntervalUS = 1000000;
+static const NSInteger kStatBarDefaultRefreshRateSec = 1;
 static const NSUInteger kStatBarLiveMaxTicks = 43200;
 static const useconds_t kNSBarLiveIntervalUS = 500000;
 static const useconds_t kNSBarLiveBackgroundIntervalUS = 1000000;
@@ -1125,6 +1126,21 @@ static BOOL settings_should_log_nicebar_tick(NSUInteger tick,
 static useconds_t settings_live_interval(useconds_t foregroundUS, useconds_t backgroundUS)
 {
     return (g_app_in_background != 0) ? backgroundUS : foregroundUS;
+}
+
+static useconds_t settings_statbar_refresh_rate_us(void)
+{
+    NSInteger sec = [[NSUserDefaults standardUserDefaults] integerForKey:kSettingsStatBarRefreshRateSec];
+    if (sec <= 0) sec = kStatBarDefaultRefreshRateSec;
+    if (sec < 1) sec = 1;
+    if (sec > 30) sec = 30;
+    return (useconds_t)sec * 1000000;
+}
+
+static useconds_t settings_statbar_live_interval_us(void)
+{
+    return settings_live_interval(kStatBarLiveIntervalUS,
+                                  settings_statbar_refresh_rate_us());
 }
 
 static const char *settings_live_context(void)
@@ -3176,7 +3192,7 @@ static void settings_start_statbar_live_loop(void)
 
         printf("[SETTINGS] StatBar live loop started interval=%uus background=%uus max=%lu\n",
                kStatBarLiveIntervalUS,
-               kStatBarLiveBackgroundIntervalUS,
+               settings_statbar_refresh_rate_us(),
                (unsigned long)kStatBarLiveMaxTicks);
         cyanide_upload_log_milestone(@"statbar-live-started");
 
@@ -3185,8 +3201,7 @@ static void settings_start_statbar_live_loop(void)
                    !settings_cleanup_in_progress() &&
                    !g_statbar_live_stop_requested &&
                    tick < kStatBarLiveMaxTicks) {
-                useconds_t intervalUS = settings_live_interval(kStatBarLiveIntervalUS,
-                                                               kStatBarLiveBackgroundIntervalUS);
+                useconds_t intervalUS = settings_statbar_live_interval_us();
                 if (!settings_statbar_screen_awake()) {
                     if (!pausedForSleep) {
                         pausedForSleep = YES;
@@ -3242,8 +3257,7 @@ static void settings_start_statbar_live_loop(void)
                 uint64_t nowUS = settings_now_us();
                 uint64_t elapsedUS = (tickStartUS != 0 && nowUS >= tickStartUS) ? (nowUS - tickStartUS) : 0;
                 if (nextTickUS != 0) {
-                    intervalUS = settings_live_interval(kStatBarLiveIntervalUS,
-                                                        kStatBarLiveBackgroundIntervalUS);
+                    intervalUS = settings_statbar_live_interval_us();
                     nextTickUS += intervalUS;
                     if (nowUS < nextTickUS) {
                         uint64_t sleepUS = nextTickUS - nowUS;
@@ -3270,8 +3284,7 @@ static void settings_start_statbar_live_loop(void)
                     }
                 } else {
                     settings_live_loop_sleep_interruptible(0,
-                                                           settings_live_interval(kStatBarLiveIntervalUS,
-                                                                                  kStatBarLiveBackgroundIntervalUS),
+                                                           settings_statbar_live_interval_us(),
                                                            &g_statbar_live_stop_requested);
                 }
             }
@@ -4736,7 +4749,8 @@ static BOOL settings_key_is_statbar(NSString *key)
            [key isEqualToString:kSettingsStatBarShowCPU] ||
            [key isEqualToString:kSettingsStatBarShowRAM] ||
            [key isEqualToString:kSettingsStatBarShowNet] ||
-           [key isEqualToString:kSettingsStatBarShowLabels];
+           [key isEqualToString:kSettingsStatBarShowLabels] ||
+           [key isEqualToString:kSettingsStatBarRefreshRateSec];
 }
 
 static BOOL settings_key_is_nsbar(NSString *key)
@@ -5184,6 +5198,7 @@ void settings_register_defaults(void)
         kSettingsStatBarShowRAM:    @YES,
         kSettingsStatBarShowNet:    @NO,
         kSettingsStatBarShowLabels: @YES,
+        kSettingsStatBarRefreshRateSec: @(kStatBarDefaultRefreshRateSec),
 
         kSettingsNSBarEnabled: @NO,
         kSettingsNSBarPosition: @0,  // 0=TopLeft, 1=BottomLeft, 2=TopRight, 3=BottomRight
@@ -5570,7 +5585,7 @@ void settings_run_actions(void)
                     }
 
                     if (runStatBar) {
-                        settings_progress(&step, total, "Starting StatBar overlay and 1s feed");
+                        settings_progress(&step, total, "Starting StatBar overlay and live feed");
                         bool ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
                                                            [d boolForKey:kSettingsStatBarShowTemp],
                                                            [d boolForKey:kSettingsStatBarShowCPU],
@@ -5582,7 +5597,7 @@ void settings_run_actions(void)
                         printf("[SETTINGS] StatBar result=%d\n", ok);
                         log_user("%s StatBar %s.\n",
                                  ok ? "[OK]" : "[WARN]",
-                                 ok ? "receiving live data" : "did not start cleanly");
+                                 ok ? "showing thermal + memory overlay" : "did not start cleanly");
                         cyanide_upload_log_milestone(ok ? @"statbar-initial-applied" : @"statbar-initial-failed");
                     }
 
@@ -7737,6 +7752,9 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         @{ @"kind": @"toggle", @"key": kSettingsStatBarShowRAM,     @"title": @"Show RAM" },
         @{ @"kind": @"toggle", @"key": kSettingsStatBarShowLabels,  @"title": @"Show CPU / RAM labels" },
         @{ @"kind": @"toggle", @"key": kSettingsStatBarShowNet,     @"title": @"Show network speed" },
+        @{ @"kind": @"slider", @"key": kSettingsStatBarRefreshRateSec,
+           @"title": @"Refresh rate", @"min": @1, @"max": @30, @"step": @1,
+           @"unit": @"s", @"default": @(kStatBarDefaultRefreshRateSec) },
     ];
 }
 
@@ -7979,6 +7997,8 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         [out addObject:@{@"title": @"Show CPU %",          @"value": [d boolForKey:kSettingsStatBarShowCPU]    ? @"On" : @"Off"}];
         [out addObject:@{@"title": @"Show CPU/RAM labels", @"value": [d boolForKey:kSettingsStatBarShowLabels] ? @"On" : @"Off"}];
         [out addObject:@{@"title": @"Show net speed",      @"value": [d boolForKey:kSettingsStatBarShowNet]    ? @"On" : @"Off"}];
+        [out addObject:@{@"title": @"Refresh rate",        @"value": [NSString stringWithFormat:@"%lds",
+                                                                       (long)[d integerForKey:kSettingsStatBarRefreshRateSec]]}];
     } else if (section == SectionNSBar) {
         NSArray<NSString *> *positions = nsbar_positions();
         NSInteger pos = [d integerForKey:kSettingsNSBarPosition];
@@ -8212,7 +8232,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         return @"Underclocks the CPU/GPU via thermalmonitord by simulating thermal pressure. Nominal is the daily-use default. Light, Moderate, and Heavy intentionally underclock the CPU more and can make the device feel laggy, especially on older hardware.";
     }
     if (s == SectionStatBar) {
-        return @"Live overlay. When enabled, StatBar keeps a SpringBoard RemoteCall session open and refreshes once per second until toggled off.";
+        return @"Live overlay. When enabled, StatBar keeps a SpringBoard RemoteCall session open. Refresh rate applies when Cyanide is minimized but the screen is still awake; StatBar pauses while the screen is locked or asleep.";
     }
     if (s == SectionNSBar) {
         return @"Tap a position box to move the network speed pill. Position changes apply silently during the active SpringBoard session.";
