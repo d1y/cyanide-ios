@@ -56,6 +56,14 @@ extern NSString * const kSettingsAxonLiteEnabled;
 
 extern NSString * const kSettingsTypeBannerEnabled;
 
+extern NSString * const kSettingsGravityLiteEnabled;
+extern NSString * const kSettingsGravityLiteDockEnabled;
+extern NSString * const kSettingsGravityLiteMagnitudePct;
+extern NSString * const kSettingsGravityLiteBouncePct;
+extern NSString * const kSettingsGravityLiteFrictionPct;
+extern NSString * const kSettingsGravityLiteResistancePct;
+extern NSString * const kSettingsGravityLiteAngularResistancePct;
+
 extern NSString * const kSettingsThemerEnabled;
 extern NSString * const kSettingsThemerThemeID;
 extern NSString * const kSettingsThemerCustomThemePath;

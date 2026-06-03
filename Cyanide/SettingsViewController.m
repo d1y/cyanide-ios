@@ -23,8 +23,10 @@
 #import "tweaks/themer.h"
 #import "tweaks/snowboardlite.h"
 #import "tweaks/livewp.h"
+#import "tweaks/gravitylite.h"
 
 #import <objc/runtime.h>
+#import <CoreMotion/CoreMotion.h>
 #import <dlfcn.h>
 #import "DSKeepAlive.h"
 #import "TaskRop/RemoteCall.h"
@@ -794,6 +796,14 @@ NSString * const kSettingsAxonLiteEnabled = @"AxonLiteEnabled";
 
 NSString * const kSettingsTypeBannerEnabled = @"TypeBannerEnabled";
 
+NSString * const kSettingsGravityLiteEnabled = @"GravityLiteEnabled";
+NSString * const kSettingsGravityLiteDockEnabled = @"GravityLiteDockEnabled";
+NSString * const kSettingsGravityLiteMagnitudePct = @"GravityLiteMagnitudePct";
+NSString * const kSettingsGravityLiteBouncePct = @"GravityLiteBouncePct";
+NSString * const kSettingsGravityLiteFrictionPct = @"GravityLiteFrictionPct";
+NSString * const kSettingsGravityLiteResistancePct = @"GravityLiteResistancePct";
+NSString * const kSettingsGravityLiteAngularResistancePct = @"GravityLiteAngularResistancePct";
+
 NSString * const kSettingsThemerEnabled = @"ThemerEnabled";
 NSString * const kSettingsThemerThemeID = @"ThemerThemeID";
 NSString * const kSettingsThemerCustomThemePath = @"ThemerCustomThemePath";
@@ -858,6 +868,7 @@ static void cyanide_upload_log_if_enabled(void);
 static void cyanide_upload_log_milestone(NSString *event);
 static void cyanide_start_session_uploads(void);
 static void cyanide_stop_session_uploads(void);
+static BOOL settings_cleanup_in_progress(void);
 
 extern int  escape_sbx_demo2(void);
 extern int  escape_sbx_demo2_in_session(void);
@@ -881,6 +892,11 @@ static volatile int g_axonlite_live_running = 0;
 static volatile int g_axonlite_live_stop_requested = 0;
 static volatile int g_typebanner_live_running = 0;
 static volatile int g_typebanner_live_stop_requested = 0;
+static volatile int g_gravitylite_background_armed = 0;
+static volatile int g_gravitylite_start_worker_running = 0;
+static volatile int g_gravity_motion_stop_requested = 1;
+static volatile uint64_t g_gravity_motion_generation = 0;
+static CMMotionManager *g_gravity_motion_manager = nil;
 static volatile int g_themer_live_running = 0;
 static volatile int g_themer_live_stop_requested = 0;
 static volatile int g_livewp_live_running = 0;
@@ -1031,6 +1047,7 @@ static NSArray<NSString *> *settings_rc_backed_tweak_keys(void)
             kSettingsRSSIDisplayEnabled,
             kSettingsAxonLiteEnabled,
             kSettingsTypeBannerEnabled,
+            kSettingsGravityLiteEnabled,
             kSettingsPowercuffEnabled,
             kSettingsDSDisableAppLibrary,
             kSettingsDSDisableIconFlyIn,
@@ -1229,6 +1246,80 @@ static BOOL settings_screen_locked_cached(void)
     return g_screen_locked != 0;
 }
 
+static BOOL settings_gravity_motion_can_remote_call(uint64_t generation,
+                                                    CMMotionManager *manager)
+{
+    return manager &&
+           manager == g_gravity_motion_manager &&
+           generation == g_gravity_motion_generation &&
+           g_gravity_motion_stop_requested == 0 &&
+           g_springboard_rc_ready != 0 &&
+           !settings_screen_locked_cached() &&
+           settings_screen_awake_cached() &&
+           !settings_cleanup_in_progress();
+}
+
+static void settings_start_gravity_motion(double magnitude)
+{
+    if (g_gravity_motion_manager) {
+        [g_gravity_motion_manager stopDeviceMotionUpdates];
+        [g_gravity_motion_manager stopAccelerometerUpdates];
+        g_gravity_motion_manager = nil;
+    }
+
+    CMMotionManager *manager = [[CMMotionManager alloc] init];
+    g_gravity_motion_manager = manager;
+    uint64_t generation = __sync_add_and_fetch(&g_gravity_motion_generation, 1);
+    __sync_lock_test_and_set(&g_gravity_motion_stop_requested, 0);
+
+    NSOperationQueue *queue = [[NSOperationQueue alloc] init];
+    queue.maxConcurrentOperationCount = 1;
+
+    if (manager.deviceMotionAvailable) {
+        manager.deviceMotionUpdateInterval = 0.05;
+        [manager startDeviceMotionUpdatesToQueue:queue withHandler:^(CMDeviceMotion *motion, NSError *error) {
+            if (!motion || error || !settings_gravity_motion_can_remote_call(generation, manager)) return;
+            double tilt = hypot(motion.gravity.x, motion.gravity.y);
+            double angle = (tilt < 0.14) ? M_PI_2 : atan2(-motion.gravity.y, motion.gravity.x);
+            double effectiveMagnitude = magnitude * ((tilt < 0.14)
+                                                     ? 0.65
+                                                     : (0.90 + fmin(tilt, 1.0) * 0.60));
+            @synchronized (settings_rc_lock()) {
+                if (!settings_gravity_motion_can_remote_call(generation, manager)) return;
+                gravitylite_update_gravity_angle_in_session(angle, effectiveMagnitude);
+            }
+        }];
+    } else {
+        manager.accelerometerUpdateInterval = 0.05;
+        [manager startAccelerometerUpdatesToQueue:queue withHandler:^(CMAccelerometerData *data, NSError *error) {
+            if (!data || error || !settings_gravity_motion_can_remote_call(generation, manager)) return;
+            double tilt = hypot(data.acceleration.x, data.acceleration.y);
+            double angle = (tilt < 0.14) ? M_PI_2 : atan2(-data.acceleration.y, data.acceleration.x);
+            double effectiveMagnitude = magnitude * ((tilt < 0.14)
+                                                     ? 0.65
+                                                     : (0.90 + fmin(tilt, 1.2) * 0.50));
+            @synchronized (settings_rc_lock()) {
+                if (!settings_gravity_motion_can_remote_call(generation, manager)) return;
+                gravitylite_update_gravity_angle_in_session(angle, effectiveMagnitude);
+            }
+        }];
+    }
+
+    printf("[GRAVITY] accelerometer active magnitude=%.2f\n", magnitude);
+}
+
+static void settings_stop_gravity_motion(void)
+{
+    __sync_lock_test_and_set(&g_gravity_motion_stop_requested, 1);
+    __sync_add_and_fetch(&g_gravity_motion_generation, 1);
+    CMMotionManager *manager = g_gravity_motion_manager;
+    if (!manager) return;
+    g_gravity_motion_manager = nil;
+    [manager stopDeviceMotionUpdates];
+    [manager stopAccelerometerUpdates];
+    printf("[GRAVITY] accelerometer stopped\n");
+}
+
 static BOOL settings_refresh_screen_lock_state(const char *reason)
 {
     BOOL locked = settings_read_screen_locked();
@@ -1295,6 +1386,7 @@ static void settings_forget_springboard_tweak_state_locked(void)
     killallapps_forget_remote_state();
     themer_forget_remote_state();
     livewp_forget_remote_state();
+    gravitylite_forget_remote_state();
 }
 
 static void settings_stop_springboard_tweaks_locked(const char *reason,
@@ -1338,6 +1430,11 @@ static void settings_stop_springboard_tweaks_locked(const char *reason,
     bool livewpStopped = livewp_stop_in_session();
     printf("[SETTINGS] %s LiveWP stop result=%d\n",
            reason ?: "SpringBoard cleanup", livewpStopped);
+
+    settings_stop_gravity_motion();
+    bool gravityStopped = gravitylite_stop_in_session();
+    printf("[SETTINGS] %s Gravity Lite stop result=%d\n",
+           reason ?: "SpringBoard cleanup", gravityStopped);
 
     bool nsbarStopped = nsbar_stop_in_session();
     printf("[SETTINGS] %s NSBar stop result=%d\n",
@@ -1598,6 +1695,8 @@ static void settings_request_all_live_loops_stop(const char *reason)
     g_rssi_live_stop_requested = 1;
     g_axonlite_live_stop_requested = 1;
     g_typebanner_live_stop_requested = 1;
+    __sync_lock_test_and_set(&g_gravitylite_background_armed, 0);
+    settings_stop_gravity_motion();
     g_themer_live_stop_requested = 1;
     g_livewp_live_stop_requested = 1;
     if (reason) {
@@ -1622,6 +1721,8 @@ static BOOL settings_has_active_termination_live_tweak(void)
             settings_tweak_is_applied(kSettingsAxonLiteEnabled)) ||
            ([d boolForKey:kSettingsTypeBannerEnabled] &&
             settings_tweak_is_applied(kSettingsTypeBannerEnabled)) ||
+           ([d boolForKey:kSettingsGravityLiteEnabled] &&
+            settings_tweak_is_applied(kSettingsGravityLiteEnabled)) ||
            ([d boolForKey:kSettingsNiceBarLiteEnabled] &&
             settings_tweak_is_applied(kSettingsNiceBarLiteEnabled)) ||
            ([d boolForKey:kSettingsLiveWPEnabled] &&
@@ -2777,6 +2878,136 @@ static bool settings_apply_layout_extras_from_defaults_locked(NSUserDefaults *d)
     double homeScale = (hsPct > 0) ? (double)hsPct / 100.0 : 1.0;
     double dockScale = (dkPct > 0) ? (double)dkPct / 100.0 : 1.0;
     return darksword_layout_apply_in_session(exL, exR, exT, exB, dockExH, homeScale, dockScale);
+}
+
+static GravityLiteConfig settings_gravitylite_config_from_defaults(NSUserDefaults *d)
+{
+    NSInteger magnitudePct = [d integerForKey:kSettingsGravityLiteMagnitudePct];
+    NSInteger bouncePct = [d integerForKey:kSettingsGravityLiteBouncePct];
+    NSInteger frictionPct = [d integerForKey:kSettingsGravityLiteFrictionPct];
+    NSInteger resistancePct = [d integerForKey:kSettingsGravityLiteResistancePct];
+    NSInteger angularResistancePct = [d integerForKey:kSettingsGravityLiteAngularResistancePct];
+    if (magnitudePct <= 0) magnitudePct = 100;
+    if (resistancePct < 0) resistancePct = 0;
+    if (angularResistancePct < 0) angularResistancePct = 0;
+
+    GravityLiteConfig config = {
+        .includeDock = [d boolForKey:kSettingsGravityLiteDockEnabled],
+        .allowsRotation = true,
+        .magnitude = (double)magnitudePct / 45.0,
+        .bounce = (double)bouncePct / 100.0,
+        .friction = (double)frictionPct / 100.0,
+        .resistance = (double)resistancePct / 100.0,
+        .angularResistance = (double)angularResistancePct / 100.0,
+        .explosionForce = 7.0,
+    };
+    return config;
+}
+
+static bool settings_apply_gravitylite_from_defaults_locked(NSUserDefaults *d)
+{
+    if (![d boolForKey:kSettingsGravityLiteEnabled]) return false;
+    return gravitylite_apply_in_session(settings_gravitylite_config_from_defaults(d));
+}
+
+static void settings_restart_gravity_motion_if_active(const char *reason)
+{
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    if (![d boolForKey:kSettingsGravityLiteEnabled]) return;
+    if (!settings_tweak_is_applied(kSettingsGravityLiteEnabled)) return;
+    if (!g_springboard_rc_ready || settings_cleanup_in_progress()) return;
+    if (!settings_screen_awake_cached() || settings_screen_locked_cached()) return;
+    if (g_gravity_motion_stop_requested == 0 && g_gravity_motion_manager) return;
+
+    GravityLiteConfig config = settings_gravitylite_config_from_defaults(d);
+    settings_start_gravity_motion(config.magnitude);
+    printf("[GRAVITY] accelerometer loop restarted%s%s\n",
+           reason ? ": " : "", reason ?: "");
+}
+
+static bool settings_arm_gravitylite_for_background_start_locked(NSUserDefaults *d,
+                                                                 const char *reason)
+{
+    if (![d boolForKey:kSettingsGravityLiteEnabled]) return false;
+    bool stopped = gravitylite_stop_in_session();
+    settings_stop_gravity_motion();
+    __sync_lock_test_and_set(&g_gravitylite_background_armed, 1);
+    settings_mark_tweak_applied(kSettingsGravityLiteEnabled, YES);
+    printf("[SETTINGS] Gravity Lite armed for background start%s%s stop=%d\n",
+           reason ? ": " : "", reason ?: "", stopped);
+    return true;
+}
+
+static BOOL settings_gravitylite_start_window_ready(const char *reason)
+{
+    (void)settings_refresh_screen_awake_state(reason ?: "gravity start");
+    (void)settings_refresh_screen_lock_state(reason ?: "gravity start");
+    return settings_screen_awake_cached() && !settings_screen_locked_cached();
+}
+
+static void settings_apply_armed_gravitylite_once_async(const char *reason)
+{
+    if (g_gravitylite_start_worker_running != 0) return;
+    if (g_gravitylite_background_armed == 0) return;
+    if (settings_cleanup_in_progress()) return;
+    if (__sync_lock_test_and_set(&g_gravitylite_start_worker_running, 1)) return;
+
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        @try {
+            uint64_t waitDeadline = settings_now_us() + 30000000ULL;
+            while (!settings_cleanup_in_progress() &&
+                   g_gravitylite_background_armed != 0 &&
+                   [d boolForKey:kSettingsGravityLiteEnabled] &&
+                   g_springboard_rc_ready &&
+                   !settings_gravitylite_start_window_ready(reason ?: "gravity start")) {
+                if (settings_now_us() >= waitDeadline) return;
+                usleep(50000);
+            }
+
+            if (settings_cleanup_in_progress()) return;
+            if (![d boolForKey:kSettingsGravityLiteEnabled] || !g_springboard_rc_ready) return;
+            if (!settings_gravitylite_start_window_ready(reason ?: "gravity start")) return;
+
+            bool ok = false;
+            GravityLiteConfig appliedConfig = {0};
+            uint64_t applyDeadline = settings_now_us() + 2000000ULL;
+            int attempt = 0;
+            do {
+                usleep(80000);
+                @synchronized (settings_rc_lock()) {
+                    if (settings_cleanup_in_progress() ||
+                        !g_springboard_rc_ready ||
+                        ![d boolForKey:kSettingsGravityLiteEnabled] ||
+                        !settings_gravitylite_start_window_ready(reason ?: "gravity start")) {
+                        return;
+                    }
+                    if (!__sync_bool_compare_and_swap(&g_gravitylite_background_armed, 1, 0) && attempt == 0) return;
+                    appliedConfig = settings_gravitylite_config_from_defaults(d);
+                    ok = gravitylite_apply_in_session(appliedConfig);
+                    settings_mark_tweak_applied(kSettingsGravityLiteEnabled,
+                                                ok && [d boolForKey:kSettingsGravityLiteEnabled]);
+                }
+                if (ok) break;
+                attempt++;
+                usleep(120000);
+            } while (settings_now_us() < applyDeadline);
+
+            if (ok) {
+                settings_start_gravity_motion(appliedConfig.magnitude);
+                log_user("[OK] Gravity Lite active.\n");
+                cyanide_upload_log_milestone(@"gravity-lite-applied");
+            } else {
+                log_user("[WARN] Gravity Lite did not start cleanly.\n");
+                cyanide_upload_log_milestone(@"gravity-lite-warning");
+            }
+            printf("[SETTINGS] Gravity Lite start%s%s result=%d\n",
+                   reason ? ": " : "", reason ?: "", ok);
+            settings_notify_package_queue_changed_async();
+        } @finally {
+            __sync_lock_release(&g_gravitylite_start_worker_running);
+        }
+    });
 }
 
 static NSString * const kThemerThemeNone = @"";
@@ -4687,6 +4918,7 @@ void settings_application_did_enter_background(void)
         (settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled] && g_springboard_rc_ready) ||
         ([d boolForKey:kSettingsStatBarEnabled]     && g_springboard_rc_ready) ||
         ([d boolForKey:kSettingsNiceBarLiteEnabled] && g_springboard_rc_ready) ||
+        ([d boolForKey:kSettingsGravityLiteEnabled] && g_springboard_rc_ready) ||
         ([d boolForKey:kSettingsThemerEnabled]      && g_springboard_rc_ready) ||
         ([d boolForKey:kSettingsSnowBoardLiteEnabled] && g_springboard_rc_ready) ||
         [d boolForKey:kSettingsTypeBannerEnabled];
@@ -4702,6 +4934,10 @@ void settings_application_did_enter_background(void)
 
     if ([d boolForKey:kSettingsAxonLiteEnabled] && g_springboard_rc_ready) {
         settings_apply_axonlite_once_async("entered background");
+    }
+    if ([d boolForKey:kSettingsGravityLiteEnabled] && g_springboard_rc_ready &&
+        g_gravitylite_background_armed != 0) {
+        settings_apply_armed_gravitylite_once_async("entered background");
     }
     if (settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled] && g_springboard_rc_ready) {
         settings_apply_rssi_once_async("entered background");
@@ -4729,6 +4965,7 @@ void settings_application_will_enter_foreground(void)
     settings_apply_nicebarlite_once_async("will enter foreground");
     settings_apply_rssi_once_async("will enter foreground");
     settings_apply_axonlite_once_async("will enter foreground");
+    settings_restart_gravity_motion_if_active("will enter foreground");
     settings_resume_livewp_after_wake_async("will enter foreground");
     settings_start_themer_live_loop();
     if ([[NSUserDefaults standardUserDefaults] boolForKey:kSettingsTypeBannerEnabled]) {
@@ -4746,6 +4983,7 @@ void settings_application_did_become_active(void)
     settings_apply_nicebarlite_once_async("became active");
     settings_apply_rssi_once_async("became active");
     settings_apply_axonlite_once_async("became active");
+    settings_restart_gravity_motion_if_active("became active");
     settings_resume_livewp_after_wake_async("became active");
     settings_start_themer_live_loop();
     if ([[NSUserDefaults standardUserDefaults] boolForKey:kSettingsTypeBannerEnabled]) {
@@ -4815,6 +5053,17 @@ static BOOL settings_key_is_typebanner(NSString *key)
     return [key isEqualToString:kSettingsTypeBannerEnabled];
 }
 
+static BOOL settings_key_is_gravitylite(NSString *key)
+{
+    return [key isEqualToString:kSettingsGravityLiteEnabled] ||
+           [key isEqualToString:kSettingsGravityLiteDockEnabled] ||
+           [key isEqualToString:kSettingsGravityLiteMagnitudePct] ||
+           [key isEqualToString:kSettingsGravityLiteBouncePct] ||
+           [key isEqualToString:kSettingsGravityLiteFrictionPct] ||
+           [key isEqualToString:kSettingsGravityLiteResistancePct] ||
+           [key isEqualToString:kSettingsGravityLiteAngularResistancePct];
+}
+
 static BOOL settings_key_is_dark_tweak(NSString *key)
 {
     return [key isEqualToString:kSettingsDSDisableAppLibrary] ||
@@ -4839,6 +5088,7 @@ static BOOL settings_key_affects_package_state(NSString *key)
            [key isEqualToString:kSettingsThemerEnabled] ||
            [key isEqualToString:kSettingsSnowBoardLiteEnabled] ||
            [key isEqualToString:kSettingsLiveWPEnabled] ||
+           settings_key_is_gravitylite(key) ||
            settings_key_is_dark_tweak(key);
 }
 
@@ -5130,6 +5380,42 @@ static void settings_schedule_live_apply_for_key(NSString *key)
         return;
     }
 
+    if (settings_key_is_gravitylite(key)) {
+        if ([d boolForKey:kSettingsGravityLiteEnabled] && g_springboard_rc_ready) {
+            dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                bool ok = false;
+                GravityLiteConfig config = {0};
+                @synchronized (settings_rc_lock()) {
+                    if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
+                    ok = settings_app_state_is_foreground()
+                        ? settings_arm_gravitylite_for_background_start_locked(d, "live settings")
+                        : settings_apply_gravitylite_from_defaults_locked(d);
+                    config = settings_gravitylite_config_from_defaults(d);
+                    settings_mark_tweak_applied(kSettingsGravityLiteEnabled,
+                                                ok && [d boolForKey:kSettingsGravityLiteEnabled]);
+                    printf("[SETTINGS] live Gravity Lite apply result=%d\n", ok);
+                }
+                if (ok && !settings_app_state_is_foreground()) {
+                    settings_start_gravity_motion(config.magnitude);
+                }
+                settings_notify_package_queue_changed_async();
+            });
+        } else if (![d boolForKey:kSettingsGravityLiteEnabled]) {
+            __sync_lock_test_and_set(&g_gravitylite_background_armed, 0);
+            settings_stop_gravity_motion();
+            settings_mark_tweak_applied(kSettingsGravityLiteEnabled, NO);
+            settings_notify_package_queue_changed_async();
+            if (g_springboard_rc_ready) {
+                dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                    @synchronized (settings_rc_lock()) {
+                        if (g_springboard_rc_ready) gravitylite_stop_in_session();
+                    }
+                });
+            }
+        }
+        return;
+    }
+
     if ([key isEqualToString:kSettingsLiveWPEnabled]) {
         if ([d boolForKey:kSettingsLiveWPEnabled] && g_springboard_rc_ready) {
             dispatch_async(dispatch_get_global_queue(0, 0), ^{
@@ -5271,6 +5557,14 @@ void settings_register_defaults(void)
 
         kSettingsTypeBannerEnabled: @NO,
 
+        kSettingsGravityLiteEnabled: @NO,
+        kSettingsGravityLiteDockEnabled: @YES,
+        kSettingsGravityLiteMagnitudePct: @100,
+        kSettingsGravityLiteBouncePct: @50,
+        kSettingsGravityLiteFrictionPct: @50,
+        kSettingsGravityLiteResistancePct: @50,
+        kSettingsGravityLiteAngularResistancePct: @0,
+
         kSettingsThemerEnabled: @NO,
         kSettingsThemerThemeID: kThemerThemeNone,
         kSettingsThemerCustomThemePath: @"",
@@ -5349,6 +5643,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             BOOL rssiEnabled = settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled];
             BOOL axonLiteEnabled = [d boolForKey:kSettingsAxonLiteEnabled];
             BOOL typeBannerEnabled = [d boolForKey:kSettingsTypeBannerEnabled];
+            BOOL gravityLiteEnabled = [d boolForKey:kSettingsGravityLiteEnabled];
             BOOL liveWPEnabled = [d boolForKey:kSettingsLiveWPEnabled];
             BOOL runSBC = settings_enabled_tweak_should_run(d, kSettingsSBCEnabled, springBoardPendingOnly);
             BOOL runDarkTweaks = settings_dark_tweaks_should_run(d, springBoardPendingOnly);
@@ -5358,11 +5653,12 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             BOOL runRSSI = settings_rssi_install_allowed() && settings_enabled_tweak_should_run(d, kSettingsRSSIDisplayEnabled, springBoardPendingOnly);
             BOOL runAxonLite = settings_enabled_tweak_should_run(d, kSettingsAxonLiteEnabled, springBoardPendingOnly);
             BOOL runTypeBanner = settings_enabled_tweak_should_run(d, kSettingsTypeBannerEnabled, springBoardPendingOnly);
+            BOOL runGravityLite = settings_enabled_tweak_should_run(d, kSettingsGravityLiteEnabled, springBoardPendingOnly);
             BOOL runThemer = settings_enabled_tweak_should_run(d, kSettingsThemerEnabled, springBoardPendingOnly);
             BOOL runSnowBoardLite = settings_enabled_tweak_should_run(d, kSettingsSnowBoardLiteEnabled, springBoardPendingOnly);
             BOOL runLayoutExtras = settings_enabled_tweak_should_run(d, kSettingsLayoutExtrasEnabled, springBoardPendingOnly);
             BOOL runLiveWP = settings_enabled_tweak_should_run(d, kSettingsLiveWPEnabled, springBoardPendingOnly);
-            BOOL needsSpringBoardWork = runSBC || runDarkTweaks || runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runLayoutExtras || runTypeBanner || runThemer || runSnowBoardLite || runLiveWP;
+            BOOL needsSpringBoardWork = runSBC || runDarkTweaks || runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runLayoutExtras || runTypeBanner || runGravityLite || runThemer || runSnowBoardLite || runLiveWP;
             BOOL runSandboxEscape = [d boolForKey:kSettingsRunSandboxEscape] && (!pendingOnly || needsSpringBoardWork);
             // TypeBanner prewarms its hidden SpringBoard window during Apply
             // and reuses the open SpringBoard session for text-only updates.
@@ -5385,12 +5681,13 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             if (runRSSI) total++;
             if (runAxonLite) total++;
             if (runTypeBanner) total++;
+            if (runGravityLite) total++;
             if (runLiveWP) total++;
             NSUInteger step = 0;
 
             settings_log_run_context();
             log_user("[RUN] Verbose trace active; raw debug stream is mirrored into the app log.\n");
-            log_user("[PLAN] stages=%lu springboard=%s sbc=%s dark=%s statbar=%s nicebar=%s rssi=%s axon=%s power=%s livewp=%s\n",
+            log_user("[PLAN] stages=%lu springboard=%s sbc=%s dark=%s statbar=%s nicebar=%s rssi=%s axon=%s gravity=%s power=%s livewp=%s\n",
                      (unsigned long)total,
                      needsSpringBoard ? "yes" : "no",
                      runSBC ? "yes" : "no",
@@ -5399,6 +5696,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                      runNiceBarLite ? "yes" : "no",
                      runRSSI ? "yes" : "no",
                      runAxonLite ? "yes" : "no",
+                     runGravityLite ? "yes" : "no",
                      runPowercuff ? "yes" : "no",
                      runLiveWP ? "yes" : "no");
             if (forceSpringBoardRefresh) {
@@ -5439,6 +5737,11 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             if (runAxonLite) {
                 log_user("[PLAN] Axon Lite target: segmented notification hub refresh=15s\n");
             }
+            if (runGravityLite) {
+                log_user("[PLAN] Gravity Lite target: strength=%ld%% dock=%s\n",
+                         (long)[d integerForKey:kSettingsGravityLiteMagnitudePct],
+                         [d boolForKey:kSettingsGravityLiteDockEnabled] ? "included" : "home-only");
+            }
             if (runPowercuff) {
                 NSString *lvl = [d stringForKey:kSettingsPowercuffLevel] ?: @"nominal";
                 log_user("[PLAN] Powercuff target: thermalmonitord level=%s\n", lvl.UTF8String);
@@ -5452,6 +5755,10 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                 if (!rssiEnabled) g_rssi_live_stop_requested = 1;
                 if (!axonLiteEnabled) g_axonlite_live_stop_requested = 1;
                 if (!typeBannerEnabled) g_typebanner_live_stop_requested = 1;
+                if (!gravityLiteEnabled) {
+                    __sync_lock_test_and_set(&g_gravitylite_background_armed, 0);
+                    settings_stop_gravity_motion();
+                }
                 if (!liveWPEnabled) g_livewp_live_stop_requested = 1;
                 log_user("[DONE] No pending runtime changes to apply.\n");
                 runSucceeded = YES;
@@ -5637,6 +5944,33 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                         }
                     }
 
+                    if (runGravityLite) {
+                        settings_progress(&step, total, "Starting Gravity Lite icon physics");
+                        log_user("[GRAVITY] Preparing icon physics state...\n");
+                        __sync_lock_test_and_set(&g_gravitylite_background_armed, 0);
+                        settings_stop_gravity_motion();
+                        gravitylite_stop_in_session();
+                        GravityLiteConfig config = settings_gravitylite_config_from_defaults(d);
+                        bool ok = gravitylite_apply_in_session(config);
+                        settings_mark_tweak_applied(kSettingsGravityLiteEnabled,
+                                                    ok && [d boolForKey:kSettingsGravityLiteEnabled]);
+                        if (ok) {
+                            settings_start_gravity_motion(config.magnitude);
+                        }
+                        printf("[SETTINGS] Gravity Lite result=%d\n", ok);
+                        log_user("%s Gravity Lite %s.\n",
+                                 ok ? "[OK]" : "[WARN]",
+                                 ok ? "active" : "did not start cleanly");
+                        cyanide_upload_log_milestone(ok ? @"gravity-lite-applied" : @"gravity-lite-warning");
+                        if (!ok) {
+                            runCompletionMessage = @"Gravity Lite did not start cleanly.";
+                        }
+                    } else if (!gravityLiteEnabled) {
+                        __sync_lock_test_and_set(&g_gravitylite_background_armed, 0);
+                        settings_stop_gravity_motion();
+                        gravitylite_stop_in_session();
+                    }
+
                     if (runStatBar) {
                         settings_progress(&step, total, "Starting StatBar overlay and live feed");
                         bool ok = statbar_apply_in_session([d boolForKey:kSettingsStatBarCelsius],
@@ -5786,7 +6120,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             } else {
                 g_typebanner_live_stop_requested = 1;
             }
-            if (runStatBar || runNiceBarLite || runRSSI || runAxonLite || runTypeBanner || runLiveWP)
+            if (runStatBar || runNiceBarLite || runRSSI || runAxonLite || runTypeBanner || runGravityLite || runLiveWP)
                 cyanide_upload_log_milestone(@"live-tweaks-started");
 
             if (!settings_has_persistent_springboard_remote_call_user()) {
@@ -5864,6 +6198,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionThemer,
     SectionSnowBoardLite,
     SectionLiveWP,
+    SectionGravityLite,
     SectionDragCoefficient,
     SectionCount,
 };
@@ -7861,6 +8196,62 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     ];
 }
 
+- (NSArray<NSDictionary *> *)gravityLiteRows
+{
+    return @[
+        @{ @"kind": @"toggle",
+           @"key": kSettingsGravityLiteDockEnabled,
+           @"title": @"Include Dock" },
+        @{ @"kind": @"slider",
+           @"key": kSettingsGravityLiteMagnitudePct,
+           @"title": @"Gravity strength",
+           @"min": @25,
+           @"max": @300,
+           @"step": @5,
+           @"unit": @"%",
+           @"default": @100 },
+        @{ @"kind": @"slider",
+           @"key": kSettingsGravityLiteBouncePct,
+           @"title": @"Bounce",
+           @"min": @0,
+           @"max": @100,
+           @"step": @5,
+           @"unit": @"%",
+           @"default": @50 },
+        @{ @"kind": @"slider",
+           @"key": kSettingsGravityLiteFrictionPct,
+           @"title": @"Friction",
+           @"min": @0,
+           @"max": @100,
+           @"step": @5,
+           @"unit": @"%",
+           @"default": @50 },
+        @{ @"kind": @"slider",
+           @"key": kSettingsGravityLiteResistancePct,
+           @"title": @"Resistance",
+           @"min": @0,
+           @"max": @200,
+           @"step": @5,
+           @"unit": @"%",
+           @"default": @50 },
+        @{ @"kind": @"slider",
+           @"key": kSettingsGravityLiteAngularResistancePct,
+           @"title": @"Spin resistance",
+           @"min": @0,
+           @"max": @200,
+           @"step": @5,
+           @"unit": @"%",
+           @"default": @0 },
+        @{ @"kind": @"button",
+           @"title": @"Explosion Pulse",
+           @"action": @"gravitylite-explosion" },
+        @{ @"kind": @"button",
+           @"title": @"Restore Icon Layout",
+           @"action": @"gravitylite-restore",
+           @"destructive": @YES },
+    ];
+}
+
 - (NSArray<NSDictionary *> *)livewpRows
 {
     NSString *absPath = settings_livewp_absolute_path();
@@ -8092,6 +8483,11 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         NSString *absPath = settings_livewp_absolute_path();
         NSString *videoName = (absPath && absPath.length > 0) ? [absPath lastPathComponent] : @"None";
         [out addObject:@{@"title": @"Video", @"value": videoName}];
+    } else if (section == SectionGravityLite) {
+        [out addObject:@{@"title": @"Dock", @"value": [d boolForKey:kSettingsGravityLiteDockEnabled] ? @"Included" : @"Home only"}];
+        [out addObject:@{@"title": @"Strength", @"value": [NSString stringWithFormat:@"%ld%%", (long)[d integerForKey:kSettingsGravityLiteMagnitudePct]]}];
+        [out addObject:@{@"title": @"Bounce", @"value": [NSString stringWithFormat:@"%ld%%", (long)[d integerForKey:kSettingsGravityLiteBouncePct]]}];
+        [out addObject:@{@"title": @"Friction", @"value": [NSString stringWithFormat:@"%ld%%", (long)[d integerForKey:kSettingsGravityLiteFrictionPct]]}];
     }
     return out;
 }
@@ -8116,6 +8512,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         case SectionAxonLite:  return self.axonLiteRows;
         case SectionTypeBanner: return self.typebannerRows;
         case SectionLiveWP:    return self.livewpRows;
+        case SectionGravityLite: return self.gravityLiteRows;
         default: return @[];
     }
 }
@@ -8140,6 +8537,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         @{ @"title": @"Cyanide Themer",     @"icon": @"paintpalette.fill",                   @"color": [UIColor systemPinkColor],   @"section": @(SectionThemer) },
         @{ @"title": @"SnowBoard Lite",     @"icon": @"square.stack.3d.up.fill",             @"color": [UIColor systemMintColor],   @"section": @(SectionSnowBoardLite) },
         @{ @"title": @"LiveWP",             @"icon": @"play.rectangle.fill",                 @"color": [UIColor systemPurpleColor], @"section": @(SectionLiveWP) },
+        @{ @"title": @"Gravity Lite",       @"icon": @"arrow.down.circle.fill",              @"color": [UIColor systemGreenColor],  @"section": @(SectionGravityLite) },
         @{ @"title": @"Powercuff",          @"icon": @"bolt.slash.fill",                     @"color": [UIColor systemOrangeColor], @"section": @(SectionPowercuff) },
         @{ @"title": @"SpringBoard Tweaks", @"icon": @"apps.iphone",                         @"color": [UIColor systemIndigoColor], @"section": @(SectionDarkSwordTweaks) },
         @{ @"title": @"Drag Coefficient",   @"icon": @"dial.medium.fill",                     @"color": [UIColor systemIndigoColor], @"section": @(SectionDragCoefficient) },
@@ -8322,6 +8720,9 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     }
     if (s == SectionLiveWP) {
         return @"Play a video as your dynamic wallpaper on both lock screen and home screen. Select a video file from your device, then toggle Enable and hit Apply Tweaks. The video will loop continuously as your wallpaper.";
+    }
+    if (s == SectionGravityLite) {
+        return @"RemoteCall-only port of the classic Gravity icon physics tweak. Apply it, leave Cyanide with Keep Alive enabled, then tilt the device to steer icons. Restore Icon Layout resets captured icons.";
     }
     return nil;
 }
@@ -13177,6 +13578,52 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
     [self presentViewController:sheet animated:YES completion:nil];
 }
 
+- (void)runGravityLiteAction:(NSString *)action
+{
+    if (!settings_device_supported()) return;
+    BOOL restore = [action isEqualToString:@"gravitylite-restore"];
+    BOOL explosion = [action isEqualToString:@"gravitylite-explosion"];
+    if (!restore && !explosion) return;
+
+    dispatch_async(dispatch_get_global_queue(0, 0), ^{
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        if (g_settings_actions_running) {
+            log_user("[GRAVITY] Action blocked: Apply Tweaks is still running.\n");
+            return;
+        }
+        if (!settings_ensure_kexploit()) {
+            log_user("[GRAVITY] Action failed: kernel primitives were not acquired.\n");
+            return;
+        }
+
+        bool ok = false;
+        @synchronized (settings_rc_lock()) {
+            if (!g_springboard_rc_ready &&
+                !settings_ensure_springboard_remote_call_locked()) {
+                log_user("[GRAVITY] SpringBoard RemoteCall is not ready.\n");
+                return;
+            }
+            ok = restore
+                ? gravitylite_stop_in_session()
+                : gravitylite_explosion_in_session(settings_gravitylite_config_from_defaults(d).explosionForce);
+        }
+
+        if (restore) {
+            __sync_lock_test_and_set(&g_gravitylite_background_armed, 0);
+            settings_stop_gravity_motion();
+            settings_mark_tweak_applied(kSettingsGravityLiteEnabled, NO);
+            log_user("%s Gravity Lite restore %s.\n",
+                     ok ? "[OK]" : "[WARN]",
+                     ok ? "completed" : "found no active state");
+        } else {
+            log_user("%s Gravity Lite explosion %s.\n",
+                     ok ? "[OK]" : "[WARN]",
+                     ok ? "sent" : "found no active state");
+        }
+        settings_notify_package_queue_changed_async();
+    });
+}
+
 - (void)presentNiceBarSystemPickerForSlot:(NSInteger)slot
 {
     if (slot < 0 || slot >= NiceBarLiteSlotCount) return;
@@ -13656,6 +14103,13 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
         if ([action hasPrefix:@"nicebar-"]) {
             [self presentNiceBarTextEditorForSlot:[row[@"slot"] integerValue] action:action];
         }
+        return;
+    }
+
+    if (indexPath.section == SectionGravityLite) {
+        NSDictionary *row = [self rowsForSection:indexPath.section][indexPath.row];
+        if (![row[@"kind"] isEqualToString:@"button"]) return;
+        [self runGravityLiteAction:row[@"action"]];
         return;
     }
 

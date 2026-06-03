@@ -86,6 +86,10 @@ Ported from [`kolbicz/DarkSword-Tweaks`](https://github.com/kolbicz/DarkSword-Tw
 
 > ⚠︎ Work in progress — these work but may change or need re-applying between builds.
 
+- **Gravity Lite**: core port of Julio Verne's classic Gravity tweak. Applies
+  UIDynamicAnimator physics to home-screen and dock icons — gravity, collisions,
+  bounce, friction, accelerometer steering, shake pulses, and an explosion
+  button. Use Restore Icon Layout if icons stay displaced after deactivating.
 - **Axon Lite**: groups Notification Center requests by app with a SpringBoard
   overlay and dedups duplicates while the RemoteCall session is alive.
 - **Cyanide Themer**: per-bundle icon theme engine. Walks SpringBoard's

@@ -22,7 +22,8 @@ static const NSInteger kSecNanoRegistry = 14;
 static const NSInteger kSecThemer       = 15;
 static const NSInteger kSecSnowBoardLite = 16;
 static const NSInteger kSecLiveWP       = 17;
-static const NSInteger kSecDragCoefficient = 18;
+static const NSInteger kSecGravityLite  = 18;
+static const NSInteger kSecDragCoefficient = 19;
 
 + (NSArray<Package *> *)allPackages
 {
@@ -195,6 +196,24 @@ static const NSInteger kSecDragCoefficient = 18;
                                           isNew:YES];
         liveWP.settingsSection = kSecLiveWP;
 
+        Package *gravityLite = [[Package alloc] initWithIdentifier:@"com.darksword.gravitylite"
+                                           name:@"Gravity Lite"
+                               shortDescription:@"Tilt-driven icon physics"
+                                longDescription:@"RemoteCall-only port of Julio Verne's classic Gravity tweak. It captures the visible SpringBoard icon views, replaces them with physics snapshots, and applies UIDynamicAnimator gravity, collision, bounce, friction, resistance, optional dock physics, tilt steering, restore, and an explosion pulse.\n\nThis is not a full Substrate-style port. Activator/Home-button hooks, drag gestures, and preference-daemon notifications are intentionally left out. Use Settings to tune the core physics and Restore Icon Layout to reset."
+                                        version:version
+                                         author:@"Julio Verne / zeroxjf"
+                                       category:@"Beta"
+                                     symbolName:@"arrow.down.circle.fill"
+                                           kind:PackageInstallKindToggle
+                                     enabledKey:kSettingsGravityLiteEnabled
+                                          isNew:YES];
+        gravityLite.settingsSection = kSecGravityLite;
+        gravityLite.unstableWarning = @"⚠️ Beta: RemoteCall-only physics can be reset by SpringBoard relayouts such as page swipes, folder transitions, or resprings. Use Restore Icon Layout if icons stay displaced.";
+        gravityLite.knownIssues = @[
+            @"To start cleanly, enable Keep Alive, apply Gravity Lite, then leave Cyanide so SpringBoard remains visible.",
+            @"Page swipes, folder opens, rotation, or SpringBoard relayouts may stop the effect. Run Gravity Lite again.",
+        ];
+
         Package *layoutExtras = [[Package alloc] initWithIdentifier:@"com.darksword.layoutextras"
                                            name:@"Home Layout Extras"
                                shortDescription:@"Extra home/dock padding and per-icon scaling"
@@ -331,6 +350,7 @@ static const NSInteger kSecDragCoefficient = 18;
             themer,
             snowboardLite,
             liveWP,
+            gravityLite,
         ];
     });
     return list;
