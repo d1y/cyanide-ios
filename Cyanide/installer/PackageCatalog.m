@@ -22,6 +22,7 @@ static const NSInteger kSecNanoRegistry = 14;
 static const NSInteger kSecThemer       = 15;
 static const NSInteger kSecSnowBoardLite = 16;
 static const NSInteger kSecLiveWP       = 17;
+static const NSInteger kSecDragCoefficient = 18;
 
 + (NSArray<Package *> *)allPackages
 {
@@ -287,6 +288,22 @@ static const NSInteger kSecLiveWP       = 17;
                                            kind:PackageInstallKindToggle
                                      enabledKey:kSettingsDSDoubleTapToLock
                                           isNew:NO],
+
+            ({
+                Package *drag = [[Package alloc] initWithIdentifier:@"com.darksword.drag-coefficient"
+                                                               name:@"Drag Coefficient"
+                                                   shortDescription:@"Custom SpringBoard animation speed multiplier"
+                                                    longDescription:@"Overrides _UIAnimationDragCoefficient in SpringBoard to make UIKit animations faster or slower.\n\nSet the coefficient in Settings > Drag Coefficient. 50% = 0.5x coefficient (about 2x faster), 25% = 0.25x coefficient (about 4x faster), 100% = stock.\n\nImported from kolbicz/DarkSword-Tweaks."
+                                                            version:version
+                                                             author:@"kolbicz"
+                                                           category:@"SpringBoard Tweaks"
+                                                         symbolName:@"dial.medium.fill"
+                                                               kind:PackageInstallKindToggle
+                                                         enabledKey:kSettingsDSDragCoefficientEnabled
+                                                              isNew:YES];
+                drag.settingsSection = kSecDragCoefficient;
+                drag;
+            }),
 
             [[Package alloc] initWithIdentifier:@"com.darksword.ota-block"
                                            name:@"OTA Updates"

@@ -24,6 +24,8 @@ extern NSString * const kSettingsDSDisableIconFlyIn;
 extern NSString * const kSettingsDSZeroWakeAnimation;
 extern NSString * const kSettingsDSZeroBacklightFade;
 extern NSString * const kSettingsDSDoubleTapToLock;
+extern NSString * const kSettingsDSDragCoefficientEnabled;
+extern NSString * const kSettingsDSDragCoefficientValue;
 
 extern NSString * const kSettingsLayoutExtrasEnabled;
 extern NSString * const kSettingsLayoutHomeExtraLeft;
