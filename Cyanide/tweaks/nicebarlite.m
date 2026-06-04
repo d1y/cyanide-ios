@@ -968,18 +968,18 @@ static NBLLayout nbl_read_layout(void)
     return m;
 }
 
-static double nbl_top_row_y(double topAreaHeight)
+static double nbl_top_row_y(double topAreaHeight, NiceBarLiteConfig config)
 {
     (void)topAreaHeight;
-    return kNBLTopY;
+    return kNBLTopY + config.topYOffset;
 }
 
-static double nbl_bottom_row_y(double topAreaHeight)
+static double nbl_bottom_row_y(double topAreaHeight, NiceBarLiteConfig config)
 {
-    if (!nbl_valid_top_area(topAreaHeight)) return kNBLBottomY;
+    if (!nbl_valid_top_area(topAreaHeight)) return kNBLBottomY + config.bottomYOffset;
     double y = topAreaHeight - (kNBLWinH / 2.0);
     if (topAreaHeight >= 55.0) y += kNBLDynamicIslandExtraY;
-    return fmax(kNBLBottomY, floor(y));
+    return fmax(kNBLBottomY, floor(y)) + config.bottomYOffset;
 }
 
 static bool nbl_send_double_main(uint64_t obj, const char *selName, double value)
@@ -1123,11 +1123,14 @@ static double nbl_font_size_for_slot(NiceBarLiteSlot slot)
         : kNBLFontPt;
 }
 
-static double nbl_side_margin_for_slot(NiceBarLiteSlot slot)
+static double nbl_side_margin_for_slot(NiceBarLiteSlot slot, NiceBarLiteConfig config)
 {
-    return (slot == NiceBarLiteSlotTopLeft || slot == NiceBarLiteSlotTopRight)
+    bool topSlot = slot == NiceBarLiteSlotTopLeft || slot == NiceBarLiteSlotTopRight;
+    double base = (slot == NiceBarLiteSlotTopLeft || slot == NiceBarLiteSlotTopRight)
         ? kNBLTopSideMargin
         : kNBLSideMargin;
+    double offset = topSlot ? config.topSideInsetOffset : config.bottomSideInsetOffset;
+    return fmax(2.0, base + offset);
 }
 
 static void nbl_apply_label_style(uint64_t label, NiceBarLiteSlot slot)
@@ -1208,12 +1211,13 @@ static BOOL nbl_slot_is_network_speed(NiceBarLiteSlotConfig slot)
 static double nbl_width_for_text(NSString *text,
                                  NiceBarLiteSlot slot,
                                  NiceBarLiteSlotConfig config,
-                                 NBLLayout layout)
+                                 NBLLayout layout,
+                                 NiceBarLiteConfig fullConfig)
 {
     if (text.length == 0) return 1.0;
     double maxWidth = slot == NiceBarLiteSlotBottomCenter
         ? (layout.screenWidth * 0.34)
-        : (layout.screenWidth * 0.5) - nbl_side_margin_for_slot(slot) - 4.0;
+        : (layout.screenWidth * 0.5) - nbl_side_margin_for_slot(slot, fullConfig) - 4.0;
     if (maxWidth < kNBLMinWidth) maxWidth = kNBLMinWidth;
     double width = nbl_slot_is_network_speed(config)
         ? kNBLNetworkWidth
@@ -1226,17 +1230,18 @@ static double nbl_width_for_text(NSString *text,
 static NBLRect nbl_rect_for_slot(NiceBarLiteSlot slot,
                                  NiceBarLiteSlotConfig config,
                                  NSString *text,
-                                 NBLLayout layout)
+                                 NBLLayout layout,
+                                 NiceBarLiteConfig fullConfig)
 {
-    double width = nbl_width_for_text(text, slot, config, layout);
+    double width = nbl_width_for_text(text, slot, config, layout, fullConfig);
     double x = 0.0;
-    double sideMargin = nbl_side_margin_for_slot(slot);
+    double sideMargin = nbl_side_margin_for_slot(slot, fullConfig);
     double y = (slot == NiceBarLiteSlotTopLeft || slot == NiceBarLiteSlotTopRight)
-        ? nbl_top_row_y(layout.topAreaHeight)
-        : nbl_bottom_row_y(layout.topAreaHeight);
+        ? nbl_top_row_y(layout.topAreaHeight, fullConfig)
+        : nbl_bottom_row_y(layout.topAreaHeight, fullConfig);
 
     if (slot == NiceBarLiteSlotBottomCenter) {
-        x = (layout.screenWidth - width) * 0.5;
+        x = ((layout.screenWidth - width) * 0.5) + fullConfig.centerXOffset;
     } else if (slot == NiceBarLiteSlotTopLeft || slot == NiceBarLiteSlotBottomLeft) {
         x = sideMargin;
     } else {
@@ -1540,7 +1545,7 @@ bool nicebarlite_apply_in_session(NiceBarLiteConfig config)
         r_msg2_main(label, "setAdjustsFontSizeToFitWidth:", networkSpeed ? 0 : 1, 0, 0, 0);
         unsigned long long styleMs = nbl_elapsed_ms_since(styleStartUs);
         uint64_t rectStartUs = nbl_now_us();
-        NBLRect rect = nbl_rect_for_slot((NiceBarLiteSlot)i, config.slots[i], text, layout);
+        NBLRect rect = nbl_rect_for_slot((NiceBarLiteSlot)i, config.slots[i], text, layout, config);
         unsigned long long rectMs = nbl_elapsed_ms_since(rectStartUs);
         BOOL textChanged = !gNBLLastText[i] || ![gNBLLastText[i] isEqualToString:text];
         BOOL layoutChanged = !gNBLHasLastLayout[i] ||

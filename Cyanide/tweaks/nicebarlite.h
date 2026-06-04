@@ -57,6 +57,11 @@ typedef struct {
     NiceBarLiteSlotConfig slots[NiceBarLiteSlotCount];
     bool celsius;
     uint32_t updateMask;
+    double topSideInsetOffset;
+    double bottomSideInsetOffset;
+    double topYOffset;
+    double bottomYOffset;
+    double centerXOffset;
 } NiceBarLiteConfig;
 
 bool nicebarlite_apply_in_session(NiceBarLiteConfig config);

@@ -775,6 +775,12 @@ NSString * const kSettingsNSBarPosition = @"NSBarPosition";
 
 NSString * const kSettingsNiceBarLiteEnabled = @"NiceBarLiteEnabled";
 static NSString * const kSettingsNiceBarLiteCelsius = @"NiceBarLiteCelsius";
+static NSString * const kSettingsNiceBarLiteLayoutSideInset = @"NiceBarLiteLayoutSideInset";
+static NSString * const kSettingsNiceBarLiteLayoutTopSideInset = @"NiceBarLiteLayoutTopSideInset";
+static NSString * const kSettingsNiceBarLiteLayoutBottomSideInset = @"NiceBarLiteLayoutBottomSideInset";
+static NSString * const kSettingsNiceBarLiteLayoutTopY = @"NiceBarLiteLayoutTopY";
+static NSString * const kSettingsNiceBarLiteLayoutBottomY = @"NiceBarLiteLayoutBottomY";
+static NSString * const kSettingsNiceBarLiteLayoutCenterX = @"NiceBarLiteLayoutCenterX";
 static NSString * const kSettingsNiceBarLiteSlotKindPrefix = @"NiceBarLiteSlotKind";
 static NSString * const kSettingsNiceBarLiteSlotSystemPrefix = @"NiceBarLiteSlotSystem";
 static NSString * const kSettingsNiceBarLiteSlotTextPrefix = @"NiceBarLiteSlotText";
@@ -814,6 +820,87 @@ NSString * const kSettingsSnowBoardLiteSelectedThemeID = @"SnowBoardLiteSelected
 
 NSString * const kSettingsLiveWPEnabled = @"LiveWPEnabled";
 NSString * const kSettingsLiveWPVideoPath = @"LiveWPVideoPath";
+
+@interface CyanideLayoutCalibrationPreviewView : UIView
+@property (nonatomic, copy) NSString *scope;
+@end
+
+@implementation CyanideLayoutCalibrationPreviewView
+
+- (NSInteger)valueForKey:(NSString *)key legacyKey:(NSString *)legacyKey
+{
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    id stored = [[d persistentDomainForName:NSBundle.mainBundle.bundleIdentifier] objectForKey:key];
+    if (stored) return [d integerForKey:key];
+    return legacyKey.length ? [d integerForKey:legacyKey] : [d integerForKey:key];
+}
+
+- (void)drawPillInRect:(CGRect)rect text:(NSString *)text active:(BOOL)active
+{
+    UIColor *fill = active
+        ? [UIColor colorWithWhite:1.0 alpha:0.94]
+        : [UIColor colorWithWhite:1.0 alpha:0.30];
+    UIColor *textColor = active
+        ? UIColor.blackColor
+        : [UIColor colorWithWhite:1.0 alpha:0.72];
+    UIBezierPath *path = [UIBezierPath bezierPathWithRoundedRect:rect cornerRadius:CGRectGetHeight(rect) * 0.48];
+    [fill setFill];
+    [path fill];
+
+    NSDictionary *attrs = @{
+        NSFontAttributeName: [UIFont monospacedDigitSystemFontOfSize:8.5 weight:UIFontWeightSemibold],
+        NSForegroundColorAttributeName: textColor,
+    };
+    CGSize size = [text sizeWithAttributes:attrs];
+    CGPoint p = CGPointMake(CGRectGetMidX(rect) - size.width * 0.5,
+                            CGRectGetMidY(rect) - size.height * 0.5);
+    [text drawAtPoint:p withAttributes:attrs];
+}
+
+- (void)drawRect:(CGRect)rect
+{
+    CGFloat topEdge = [self valueForKey:kSettingsNiceBarLiteLayoutTopSideInset legacyKey:kSettingsNiceBarLiteLayoutSideInset];
+    CGFloat bottomEdge = [self valueForKey:kSettingsNiceBarLiteLayoutBottomSideInset legacyKey:kSettingsNiceBarLiteLayoutSideInset];
+    CGFloat topY = [[NSUserDefaults standardUserDefaults] integerForKey:kSettingsNiceBarLiteLayoutTopY];
+    CGFloat bottomY = [[NSUserDefaults standardUserDefaults] integerForKey:kSettingsNiceBarLiteLayoutBottomY];
+    CGFloat centerX = [[NSUserDefaults standardUserDefaults] integerForKey:kSettingsNiceBarLiteLayoutCenterX];
+
+    CGRect bounds = UIEdgeInsetsInsetRect(self.bounds, UIEdgeInsetsMake(2, 4, 2, 4));
+    UIBezierPath *screen = [UIBezierPath bezierPathWithRoundedRect:bounds cornerRadius:16.0];
+    [[UIColor colorWithRed:0.055 green:0.06 blue:0.075 alpha:1.0] setFill];
+    [screen fill];
+
+    CGRect island = CGRectMake(CGRectGetMidX(bounds) - 30.0, CGRectGetMinY(bounds) + 8.0, 60.0, 15.0);
+    [[UIColor colorWithWhite:0.0 alpha:0.88] setFill];
+    [[UIBezierPath bezierPathWithRoundedRect:island cornerRadius:7.5] fill];
+
+    CGFloat scale = 0.32;
+    CGFloat topInset = MAX(8.0, 15.0 + (topEdge * scale));
+    CGFloat bottomInset = MAX(8.0, 15.0 + (bottomEdge * scale));
+    CGFloat verticalScale = 0.36;
+    CGFloat topRowY = CGRectGetMinY(bounds) + 34.0 + (topY * verticalScale);
+    CGFloat bottomRowY = CGRectGetMinY(bounds) + 70.0 + (bottomY * verticalScale);
+    CGFloat w = 42.0;
+    CGFloat h = 15.0;
+
+    [self drawPillInRect:CGRectMake(CGRectGetMinX(bounds) + topInset, topRowY, w, h)
+                    text:@"TL"
+                  active:YES];
+    [self drawPillInRect:CGRectMake(CGRectGetMaxX(bounds) - topInset - w, topRowY, w, h)
+                    text:@"TR"
+                  active:YES];
+    [self drawPillInRect:CGRectMake(CGRectGetMinX(bounds) + bottomInset, bottomRowY, w, h)
+                    text:@"BL"
+                  active:YES];
+    [self drawPillInRect:CGRectMake(CGRectGetMaxX(bounds) - bottomInset - w, bottomRowY, w, h)
+                    text:@"BR"
+                  active:YES];
+    [self drawPillInRect:CGRectMake(CGRectGetMidX(bounds) - 22.0 + (centerX * 0.42), bottomRowY, 44.0, h)
+                    text:@"MID"
+                  active:YES];
+}
+
+@end
 
 // 从相对路径（如 "LiveWP/video.mp4"）拼接为绝对路径
 static NSString *settings_livewp_absolute_path(void) {
@@ -920,6 +1007,7 @@ static volatile int g_nsbar_live_running = 0;
 static volatile int g_nsbar_live_stop_requested = 0;
 static volatile int g_nicebarlite_live_running = 0;
 static volatile int g_nicebarlite_live_stop_requested = 0;
+static volatile int64_t g_layout_slider_apply_serial = 0;
 static volatile int g_rssi_live_running = 0;
 static volatile int g_rssi_live_stop_requested = 0;
 static volatile int g_axonlite_live_running = 0;
@@ -1158,6 +1246,13 @@ static BOOL settings_nicebar_has_weather_slots(NSUserDefaults *d);
 static void settings_nicebar_refresh_weather_if_needed(BOOL force,
                                                        void (^completion)(BOOL ok, NSString *text));
 static bool settings_apply_nicebarlite_from_defaults_locked(NSUserDefaults *d);
+
+static BOOL settings_defaults_has_persisted_key(NSUserDefaults *d, NSString *key)
+{
+    if (key.length == 0) return NO;
+    NSDictionary *domain = [d persistentDomainForName:NSBundle.mainBundle.bundleIdentifier];
+    return domain[key] != nil;
+}
 
 static BOOL settings_should_log_statbar_tick(NSUInteger tick) {
     // One-shot: log the very first tick so the user can see the loop took
@@ -2716,6 +2811,14 @@ static NiceBarLiteConfig settings_nicebar_config_from_defaults(NSUserDefaults *d
     NiceBarLiteConfig cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.celsius = [d boolForKey:kSettingsNiceBarLiteCelsius];
+    NSInteger legacySideInset = [d integerForKey:kSettingsNiceBarLiteLayoutSideInset];
+    BOOL hasTopSide = settings_defaults_has_persisted_key(d, kSettingsNiceBarLiteLayoutTopSideInset);
+    BOOL hasBottomSide = settings_defaults_has_persisted_key(d, kSettingsNiceBarLiteLayoutBottomSideInset);
+    cfg.topSideInsetOffset = hasTopSide ? [d integerForKey:kSettingsNiceBarLiteLayoutTopSideInset] : legacySideInset;
+    cfg.bottomSideInsetOffset = hasBottomSide ? [d integerForKey:kSettingsNiceBarLiteLayoutBottomSideInset] : legacySideInset;
+    cfg.topYOffset = [d integerForKey:kSettingsNiceBarLiteLayoutTopY];
+    cfg.bottomYOffset = [d integerForKey:kSettingsNiceBarLiteLayoutBottomY];
+    cfg.centerXOffset = [d integerForKey:kSettingsNiceBarLiteLayoutCenterX];
     for (NSInteger i = 0; i < NiceBarLiteSlotCount; i++) {
         cfg.slots[i].kind = (int)[d integerForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotKindPrefix, i)];
         cfg.slots[i].systemItem = (int)[d integerForKey:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemPrefix, i)];
@@ -5055,7 +5158,13 @@ static BOOL settings_key_is_nsbar(NSString *key)
 static BOOL settings_key_is_nicebarlite(NSString *key)
 {
     if ([key isEqualToString:kSettingsNiceBarLiteEnabled] ||
-        [key isEqualToString:kSettingsNiceBarLiteCelsius]) return YES;
+        [key isEqualToString:kSettingsNiceBarLiteCelsius] ||
+        [key isEqualToString:kSettingsNiceBarLiteLayoutSideInset] ||
+        [key isEqualToString:kSettingsNiceBarLiteLayoutTopSideInset] ||
+        [key isEqualToString:kSettingsNiceBarLiteLayoutBottomSideInset] ||
+        [key isEqualToString:kSettingsNiceBarLiteLayoutTopY] ||
+        [key isEqualToString:kSettingsNiceBarLiteLayoutBottomY] ||
+        [key isEqualToString:kSettingsNiceBarLiteLayoutCenterX]) return YES;
     for (NSInteger i = 0; i < NiceBarLiteSlotCount; i++) {
         if ([key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotKindPrefix, i)] ||
             [key isEqualToString:settings_nicebar_key(kSettingsNiceBarLiteSlotSystemPrefix, i)] ||
@@ -5543,9 +5652,14 @@ void settings_register_defaults(void)
 
         kSettingsNSBarEnabled: @NO,
         kSettingsNSBarPosition: @0,  // 0=TopLeft, 1=BottomLeft, 2=TopRight, 3=BottomRight
-
         kSettingsNiceBarLiteEnabled: @NO,
         kSettingsNiceBarLiteCelsius: @YES,
+        kSettingsNiceBarLiteLayoutSideInset: @0,
+        kSettingsNiceBarLiteLayoutTopSideInset: @0,
+        kSettingsNiceBarLiteLayoutBottomSideInset: @0,
+        kSettingsNiceBarLiteLayoutTopY: @0,
+        kSettingsNiceBarLiteLayoutBottomY: @0,
+        kSettingsNiceBarLiteLayoutCenterX: @0,
         settings_nicebar_key(kSettingsNiceBarLiteSlotKindPrefix, NiceBarLiteSlotTopLeft): @(NiceBarLiteContentTimeFormat),
         settings_nicebar_key(kSettingsNiceBarLiteSlotKindPrefix, NiceBarLiteSlotTopRight): @(NiceBarLiteContentSystem),
         settings_nicebar_key(kSettingsNiceBarLiteSlotKindPrefix, NiceBarLiteSlotBottomLeft): @(NiceBarLiteContentSystem),
@@ -8146,6 +8260,215 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     return cell;
 }
 
+- (NSArray<NSDictionary *> *)layoutCalibrationItemsForScope:(NSString *)scope
+{
+    (void)scope;
+    return @[
+        @{ @"title": @"Top spacing",
+           @"key": kSettingsNiceBarLiteLayoutTopSideInset,
+           @"legacyKey": kSettingsNiceBarLiteLayoutSideInset,
+           @"hint": @"Move top items toward or away from the edges",
+           @"min": @-24, @"max": @36 },
+        @{ @"title": @"Bottom spacing",
+           @"key": kSettingsNiceBarLiteLayoutBottomSideInset,
+           @"legacyKey": kSettingsNiceBarLiteLayoutSideInset,
+           @"hint": @"Tune the bottom row separately",
+           @"min": @-24, @"max": @36 },
+        @{ @"title": @"Top height",
+           @"key": kSettingsNiceBarLiteLayoutTopY,
+           @"hint": @"Raise or lower the top row",
+           @"min": @-18, @"max": @36 },
+        @{ @"title": @"Bottom height",
+           @"key": kSettingsNiceBarLiteLayoutBottomY,
+           @"hint": @"Raise or lower the bottom row",
+           @"min": @-24, @"max": @44 },
+        @{ @"title": @"Center position",
+           @"key": kSettingsNiceBarLiteLayoutCenterX,
+           @"hint": @"Move only the middle item",
+           @"min": @-40, @"max": @40 },
+    ];
+}
+
+- (NSString *)layoutCalibrationValueText:(NSInteger)value
+{
+    if (value == 0) return @"0 px";
+    return [NSString stringWithFormat:@"%+ld px", (long)value];
+}
+
+- (NSInteger)layoutCalibrationValueForItem:(NSDictionary *)item
+{
+    NSString *key = item[@"key"];
+    NSString *legacyKey = item[@"legacyKey"];
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSDictionary *domain = [d persistentDomainForName:NSBundle.mainBundle.bundleIdentifier];
+    if (key.length > 0 && domain[key]) return [d integerForKey:key];
+    if (legacyKey.length > 0) return [d integerForKey:legacyKey];
+    return key.length > 0 ? [d integerForKey:key] : 0;
+}
+
+- (UIView *)layoutCalibrationControlWithItem:(NSDictionary *)item
+                                   supported:(BOOL)supported
+                                     preview:(CyanideLayoutCalibrationPreviewView *)preview
+{
+    NSString *key = item[@"key"];
+    NSInteger minV = [item[@"min"] integerValue];
+    NSInteger maxV = [item[@"max"] integerValue];
+    NSInteger value = [self layoutCalibrationValueForItem:item];
+    if (value < minV) value = minV;
+    if (value > maxV) value = maxV;
+
+    UIView *wrap = [[UIView alloc] init];
+    wrap.translatesAutoresizingMaskIntoConstraints = NO;
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = item[@"title"];
+    title.textColor = supported ? UIColor.labelColor : UIColor.tertiaryLabelColor;
+    title.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightSemibold];
+
+    UILabel *hint = [[UILabel alloc] init];
+    hint.translatesAutoresizingMaskIntoConstraints = NO;
+    hint.text = item[@"hint"];
+    hint.textColor = supported ? UIColor.tertiaryLabelColor : UIColor.tertiaryLabelColor;
+    hint.font = [UIFont systemFontOfSize:11.0 weight:UIFontWeightRegular];
+    hint.numberOfLines = 1;
+
+    UILabel *valueLabel = [[UILabel alloc] init];
+    valueLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    valueLabel.text = [self layoutCalibrationValueText:value];
+    valueLabel.textColor = supported ? UIColor.secondaryLabelColor : UIColor.tertiaryLabelColor;
+    valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:12.5 weight:UIFontWeightMedium];
+    valueLabel.textAlignment = NSTextAlignmentRight;
+
+    UISlider *slider = [[UISlider alloc] init];
+    slider.translatesAutoresizingMaskIntoConstraints = NO;
+    slider.minimumValue = (float)minV;
+    slider.maximumValue = (float)maxV;
+    slider.value = (float)value;
+    slider.continuous = YES;
+    slider.enabled = supported;
+    slider.tintColor = UIColor.systemBlueColor;
+    [slider addTarget:self action:@selector(layoutCalibrationSliderChanged:) forControlEvents:UIControlEventValueChanged];
+    [slider addTarget:self action:@selector(layoutCalibrationSliderEnded:) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
+    objc_setAssociatedObject(slider, "cyanideLayoutKey", key, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(slider, "cyanideLayoutValueLabel", valueLabel, OBJC_ASSOCIATION_ASSIGN);
+    objc_setAssociatedObject(slider, "cyanideLayoutPreview", preview, OBJC_ASSOCIATION_ASSIGN);
+
+    [wrap addSubview:title];
+    [wrap addSubview:hint];
+    [wrap addSubview:valueLabel];
+    [wrap addSubview:slider];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [title.leadingAnchor constraintEqualToAnchor:wrap.leadingAnchor],
+        [title.topAnchor constraintEqualToAnchor:wrap.topAnchor],
+        [valueLabel.trailingAnchor constraintEqualToAnchor:wrap.trailingAnchor],
+        [valueLabel.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+        [title.trailingAnchor constraintLessThanOrEqualToAnchor:valueLabel.leadingAnchor constant:-8.0],
+        [hint.leadingAnchor constraintEqualToAnchor:wrap.leadingAnchor],
+        [hint.trailingAnchor constraintLessThanOrEqualToAnchor:wrap.trailingAnchor],
+        [hint.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:1.0],
+        [slider.leadingAnchor constraintEqualToAnchor:wrap.leadingAnchor],
+        [slider.trailingAnchor constraintEqualToAnchor:wrap.trailingAnchor],
+        [slider.topAnchor constraintEqualToAnchor:hint.bottomAnchor constant:2.0],
+        [slider.bottomAnchor constraintEqualToAnchor:wrap.bottomAnchor],
+    ]];
+    return wrap;
+}
+
+- (UITableViewCell *)buildLayoutCalibrationCellInTableView:(UITableView *)tableView
+                                                       row:(NSDictionary *)row
+                                                 indexPath:(NSIndexPath *)indexPath
+{
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"layout-calibration"];
+    if (!cell) {
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"layout-calibration"];
+    }
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    cell.accessoryView = nil;
+    cell.textLabel.text = nil;
+    cell.contentConfiguration = nil;
+    cell.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    cell.contentView.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    for (UIView *v in [cell.contentView.subviews copy]) [v removeFromSuperview];
+
+    BOOL supported = settings_device_supported();
+    NSString *scope = row[@"scope"] ?: @"nicebar";
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = row[@"title"] ?: @"Fine Tune Layout";
+    title.textColor = supported ? UIColor.labelColor : UIColor.tertiaryLabelColor;
+    title.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightSemibold];
+
+    UILabel *subtitle = [[UILabel alloc] init];
+    subtitle.translatesAutoresizingMaskIntoConstraints = NO;
+    subtitle.text = row[@"subtitle"] ?: @"Adjust the preview, then check the live status bar.";
+    subtitle.textColor = supported ? UIColor.secondaryLabelColor : UIColor.tertiaryLabelColor;
+    subtitle.font = [UIFont systemFontOfSize:12.0 weight:UIFontWeightRegular];
+    subtitle.numberOfLines = 0;
+
+    UIButton *reset = [UIButton buttonWithType:UIButtonTypeSystem];
+    reset.translatesAutoresizingMaskIntoConstraints = NO;
+    [reset setTitle:@"Reset" forState:UIControlStateNormal];
+    reset.titleLabel.font = [UIFont systemFontOfSize:12.5 weight:UIFontWeightSemibold];
+    reset.enabled = supported;
+    reset.contentEdgeInsets = UIEdgeInsetsMake(5, 10, 5, 10);
+    reset.backgroundColor = UIColor.tertiarySystemFillColor;
+    reset.layer.cornerRadius = 11.0;
+    reset.layer.cornerCurve = kCACornerCurveContinuous;
+    [reset addTarget:self action:@selector(layoutCalibrationResetTapped:) forControlEvents:UIControlEventTouchUpInside];
+    objc_setAssociatedObject(reset, "cyanideLayoutScope", scope, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    UIStackView *headerText = [[UIStackView alloc] initWithArrangedSubviews:@[title, subtitle]];
+    headerText.translatesAutoresizingMaskIntoConstraints = NO;
+    headerText.axis = UILayoutConstraintAxisVertical;
+    headerText.spacing = 2.0;
+
+    CyanideLayoutCalibrationPreviewView *preview = [[CyanideLayoutCalibrationPreviewView alloc] init];
+    preview.translatesAutoresizingMaskIntoConstraints = NO;
+    preview.scope = scope;
+    preview.backgroundColor = UIColor.clearColor;
+    preview.contentMode = UIViewContentModeRedraw;
+
+    UIStackView *controls = [[UIStackView alloc] init];
+    controls.translatesAutoresizingMaskIntoConstraints = NO;
+    controls.axis = UILayoutConstraintAxisVertical;
+    controls.spacing = 10.0;
+    for (NSDictionary *item in [self layoutCalibrationItemsForScope:scope]) {
+        [controls addArrangedSubview:[self layoutCalibrationControlWithItem:item
+                                                                  supported:supported
+                                                                    preview:preview]];
+    }
+
+    [cell.contentView addSubview:headerText];
+    [cell.contentView addSubview:reset];
+    [cell.contentView addSubview:preview];
+    [cell.contentView addSubview:controls];
+
+    UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [headerText.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+        [headerText.topAnchor constraintEqualToAnchor:m.topAnchor constant:8.0],
+        [headerText.trailingAnchor constraintLessThanOrEqualToAnchor:reset.leadingAnchor constant:-12.0],
+
+        [reset.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+        [reset.centerYAnchor constraintEqualToAnchor:title.centerYAnchor],
+
+        [preview.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+        [preview.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+        [preview.topAnchor constraintEqualToAnchor:headerText.bottomAnchor constant:12.0],
+        [preview.heightAnchor constraintEqualToConstant:104.0],
+
+        [controls.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+        [controls.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+        [controls.topAnchor constraintEqualToAnchor:preview.bottomAnchor constant:12.0],
+        [controls.bottomAnchor constraintEqualToAnchor:m.bottomAnchor constant:-10.0],
+    ]];
+    (void)indexPath;
+    return cell;
+}
+
 #pragma mark - Row models
 
 - (NSArray<NSDictionary *> *)launchRows
@@ -8305,6 +8628,10 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
 {
     return @[
         @{ @"kind": @"nicebar-grid" },
+        @{ @"kind": @"layout-calibration",
+           @"scope": @"nicebar",
+           @"title": @"Fine Tune Layout",
+           @"subtitle": @"Top and bottom rows move separately. Changes update live while NiceBar Lite is running." },
         @{ @"kind": @"toggle", @"key": kSettingsNiceBarLiteCelsius, @"title": @"Use Celsius" },
         @{ @"kind": @"button", @"title": @"Traffic History", @"action": @"nicebar-traffic-history" },
         @{ @"kind": @"button", @"title": @"Apply Now", @"action": @"nicebar-apply" },
@@ -13059,6 +13386,12 @@ void cyanide_present_contact(UIViewController *host)
         return [self buildNSBarGridCellInTableView:tableView indexPath:dequeuePath];
     }
 
+    if ([kind isEqualToString:@"layout-calibration"]) {
+        return [self buildLayoutCalibrationCellInTableView:tableView
+                                                       row:row
+                                                 indexPath:dequeuePath];
+    }
+
     if ([kind isEqualToString:@"button"]) {
         BOOL rowSupported = supported ||
                             indexPath.section == SectionOTA ||
@@ -13549,6 +13882,74 @@ void cyanide_present_contact(UIViewController *host)
     printf("[SETTINGS] slider %s=%ld\n", key.UTF8String, (long)value);
     settings_schedule_live_apply_for_key(key);
     [self presentApplyLogIfRunning];
+}
+
+- (void)layoutCalibrationApplyKey:(NSString *)key delayed:(BOOL)delayed
+{
+    if (key.length == 0) return;
+    if (!settings_device_supported()) return;
+
+    int64_t serial = __sync_add_and_fetch(&g_layout_slider_apply_serial, 1);
+    void (^applyBlock)(void) = ^{
+        if (delayed && serial != g_layout_slider_apply_serial) return;
+        settings_schedule_live_apply_for_key(key);
+    };
+    if (delayed) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.12 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(),
+                       applyBlock);
+    } else {
+        applyBlock();
+    }
+}
+
+- (void)layoutCalibrationSliderChanged:(UISlider *)sender
+{
+    if (!settings_device_supported()) return;
+    NSInteger value = (NSInteger)llround((double)sender.value);
+    sender.value = (float)value;
+
+    UILabel *valueLabel = objc_getAssociatedObject(sender, "cyanideLayoutValueLabel");
+    if (valueLabel) valueLabel.text = [self layoutCalibrationValueText:value];
+
+    NSString *key = objc_getAssociatedObject(sender, "cyanideLayoutKey");
+    if (key.length == 0) return;
+    [[NSUserDefaults standardUserDefaults] setInteger:value forKey:key];
+    CyanideLayoutCalibrationPreviewView *preview = objc_getAssociatedObject(sender, "cyanideLayoutPreview");
+    [preview setNeedsDisplay];
+    [self layoutCalibrationApplyKey:key delayed:YES];
+}
+
+- (void)layoutCalibrationSliderEnded:(UISlider *)sender
+{
+    if (!settings_device_supported()) return;
+    NSString *key = objc_getAssociatedObject(sender, "cyanideLayoutKey");
+    if (key.length == 0) return;
+    NSInteger value = (NSInteger)llround((double)sender.value);
+    sender.value = (float)value;
+    [[NSUserDefaults standardUserDefaults] setInteger:value forKey:key];
+    UILabel *valueLabel = objc_getAssociatedObject(sender, "cyanideLayoutValueLabel");
+    if (valueLabel) valueLabel.text = [self layoutCalibrationValueText:value];
+    CyanideLayoutCalibrationPreviewView *preview = objc_getAssociatedObject(sender, "cyanideLayoutPreview");
+    [preview setNeedsDisplay];
+    printf("[SETTINGS] layout calibration %s=%ld\n", key.UTF8String, (long)value);
+    [self layoutCalibrationApplyKey:key delayed:NO];
+}
+
+- (void)layoutCalibrationResetTapped:(UIButton *)sender
+{
+    if (!settings_device_supported()) return;
+    NSString *scope = objc_getAssociatedObject(sender, "cyanideLayoutScope") ?: @"nicebar";
+    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+    NSString *lastKey = nil;
+    for (NSDictionary *item in [self layoutCalibrationItemsForScope:scope]) {
+        NSString *key = item[@"key"];
+        [d setInteger:0 forKey:key];
+        lastKey = key;
+    }
+    [d synchronize];
+    [self.tableView reloadData];
+    [self layoutCalibrationApplyKey:lastKey delayed:NO];
 }
 
 - (void)stepperChanged:(UIStepper *)sender
