@@ -901,12 +901,10 @@ static bool themer_prefers_view_level_overlay(const char *bundle)
 static bool themer_needs_visible_push(const char *bundle)
 {
     (void)bundle;
-    // iOS 26's model/image-cache path persists without repainting visible
-    // SBIconViews. iOS 18 reports the model graft as successful, but SpringBoard
-    // keeps rendering the already-mounted view unless we also hit the legacy
-    // visible setter path.
-    int major = themer_host_ios_major();
-    return major > 0 && major < 26;
+    // The model/cache graft is enough on iOS 18 and keeps SpringBoard's own
+    // icon subviews, including badges, in their original z-order. A second
+    // visible setOverrideImage: pass can cover badge bubbles on folders/apps.
+    return false;
 }
 
 static NSDictionary<NSString *, NSData *> *themer_normalized_theme_data(NSDictionary<NSString *, NSData *> *input)
