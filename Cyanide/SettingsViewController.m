@@ -838,6 +838,40 @@ static NSString *settings_livewp_file_size_text(unsigned long long bytes)
     return [NSString stringWithFormat:@"%.1f %@", value, units[unit]];
 }
 
+static NSError *settings_sbl_error(NSInteger code, NSString *message)
+{
+    return [NSError errorWithDomain:@"SnowBoardLite"
+                               code:code
+                           userInfo:@{NSLocalizedDescriptionKey: message ?: @"SnowBoard Lite import failed."}];
+}
+
+static NSString *settings_sbl_themes_root_for_ui(void)
+{
+    NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+    if (docs.length == 0) return nil;
+    return [[docs stringByAppendingPathComponent:@"SnowBoardLite"] stringByAppendingPathComponent:@"Themes"];
+}
+
+static BOOL settings_sbl_remove_theme_dir_if_safe(NSString *path)
+{
+    NSString *root = [settings_sbl_themes_root_for_ui() stringByStandardizingPath];
+    NSString *target = [path stringByStandardizingPath];
+    if (root.length == 0 || target.length == 0) return NO;
+    NSString *prefix = [root stringByAppendingString:@"/"];
+    if (![target hasPrefix:prefix]) return NO;
+
+    BOOL isDir = NO;
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (![fm fileExistsAtPath:target isDirectory:&isDir] || !isDir) return NO;
+    NSError *err = nil;
+    BOOL ok = [fm removeItemAtPath:target error:&err];
+    if (!ok) {
+        log_user("[SBL] Failed to remove theme directory: %s\n",
+                 err.localizedDescription.UTF8String ?: "unknown error");
+    }
+    return ok;
+}
+
 static NSString *settings_livewp_video_detail(NSString *absPath)
 {
     if (absPath.length == 0) return @"Select an MP4, MOV, or M4V file.";
@@ -6292,6 +6326,109 @@ static BOOL livewp_response_is_video_download(NSURLResponse *response)
            [mime isEqualToString:@"application/octet-stream"];
 }
 
+@interface CyanideCenteredLoadingViewController : UIViewController
+@property (nonatomic, copy) NSString *titleText;
+@property (nonatomic, copy) NSString *statusText;
+@property (nonatomic, copy) NSString *iconSymbolName;
+@property (nonatomic, strong) UIColor *accentColor;
+@end
+
+@implementation CyanideCenteredLoadingViewController
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    self.view.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.14];
+
+    UIView *shadow = [[UIView alloc] init];
+    shadow.translatesAutoresizingMaskIntoConstraints = NO;
+    shadow.backgroundColor = UIColor.clearColor;
+    shadow.layer.shadowColor = UIColor.blackColor.CGColor;
+    shadow.layer.shadowOpacity = 0.20;
+    shadow.layer.shadowRadius = 28.0;
+    shadow.layer.shadowOffset = CGSizeMake(0, 14.0);
+    [self.view addSubview:shadow];
+
+    UIVisualEffectView *card = [[UIVisualEffectView alloc] initWithEffect:[UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemThickMaterial]];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.layer.cornerRadius = 26.0;
+    card.layer.cornerCurve = kCACornerCurveContinuous;
+    card.clipsToBounds = YES;
+    [shadow addSubview:card];
+
+    UIView *content = card.contentView;
+    UIColor *accent = self.accentColor ?: UIColor.systemBlueColor;
+
+    UIView *iconPlate = [[UIView alloc] init];
+    iconPlate.translatesAutoresizingMaskIntoConstraints = NO;
+    iconPlate.backgroundColor = [accent colorWithAlphaComponent:0.13];
+    iconPlate.layer.cornerRadius = 22.0;
+    iconPlate.layer.cornerCurve = kCACornerCurveContinuous;
+    [content addSubview:iconPlate];
+
+    UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:self.iconSymbolName.length ? self.iconSymbolName : @"archivebox.fill"]];
+    icon.translatesAutoresizingMaskIntoConstraints = NO;
+    icon.tintColor = accent;
+    icon.contentMode = UIViewContentModeScaleAspectFit;
+    [iconPlate addSubview:icon];
+
+    UIActivityIndicatorView *spinner = [[UIActivityIndicatorView alloc] initWithActivityIndicatorStyle:UIActivityIndicatorViewStyleMedium];
+    spinner.translatesAutoresizingMaskIntoConstraints = NO;
+    [spinner startAnimating];
+    [content addSubview:spinner];
+
+    UILabel *title = [[UILabel alloc] init];
+    title.translatesAutoresizingMaskIntoConstraints = NO;
+    title.text = self.titleText.length ? self.titleText : @"Working";
+    title.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+    title.textColor = UIColor.labelColor;
+    [content addSubview:title];
+
+    UILabel *status = [[UILabel alloc] init];
+    status.translatesAutoresizingMaskIntoConstraints = NO;
+    status.text = self.statusText.length ? self.statusText : @"Please wait...";
+    status.font = [UIFont systemFontOfSize:13.0 weight:UIFontWeightMedium];
+    status.textColor = UIColor.secondaryLabelColor;
+    status.numberOfLines = 2;
+    [content addSubview:status];
+
+    [NSLayoutConstraint activateConstraints:@[
+        [shadow.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [shadow.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
+        [shadow.widthAnchor constraintLessThanOrEqualToConstant:332.0],
+        [shadow.widthAnchor constraintEqualToAnchor:self.view.widthAnchor multiplier:0.84],
+
+        [card.leadingAnchor constraintEqualToAnchor:shadow.leadingAnchor],
+        [card.trailingAnchor constraintEqualToAnchor:shadow.trailingAnchor],
+        [card.topAnchor constraintEqualToAnchor:shadow.topAnchor],
+        [card.bottomAnchor constraintEqualToAnchor:shadow.bottomAnchor],
+
+        [iconPlate.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:22.0],
+        [iconPlate.topAnchor constraintEqualToAnchor:content.topAnchor constant:22.0],
+        [iconPlate.bottomAnchor constraintEqualToAnchor:content.bottomAnchor constant:-22.0],
+        [iconPlate.widthAnchor constraintEqualToConstant:44.0],
+        [iconPlate.heightAnchor constraintEqualToConstant:44.0],
+
+        [icon.centerXAnchor constraintEqualToAnchor:iconPlate.centerXAnchor],
+        [icon.centerYAnchor constraintEqualToAnchor:iconPlate.centerYAnchor],
+        [icon.widthAnchor constraintEqualToConstant:25.0],
+        [icon.heightAnchor constraintEqualToConstant:25.0],
+
+        [spinner.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-22.0],
+        [spinner.centerYAnchor constraintEqualToAnchor:iconPlate.centerYAnchor],
+
+        [title.leadingAnchor constraintEqualToAnchor:iconPlate.trailingAnchor constant:14.0],
+        [title.trailingAnchor constraintEqualToAnchor:spinner.leadingAnchor constant:-12.0],
+        [title.topAnchor constraintEqualToAnchor:iconPlate.topAnchor constant:1.0],
+
+        [status.leadingAnchor constraintEqualToAnchor:title.leadingAnchor],
+        [status.trailingAnchor constraintEqualToAnchor:content.trailingAnchor constant:-22.0],
+        [status.topAnchor constraintEqualToAnchor:title.bottomAnchor constant:3.0],
+    ]];
+}
+
+@end
+
 @interface CyanideLiveWPDownloadProgressViewController : UIViewController
 @property (nonatomic, strong) UILabel *statusLabel;
 @property (nonatomic, strong) UILabel *progressLabel;
@@ -6906,6 +7043,7 @@ createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
 @property (nonatomic, strong) NSURLRequest *sblDownloadRequest;
 @property (nonatomic, copy) NSString *sblDownloadDisplayName;
 @property (nonatomic, weak) UIStackView *sblOnlineDownloadsStack;
+@property (nonatomic, strong) CyanideCenteredLoadingViewController *sblLocalImportLoadingController;
 @property (nonatomic, copy) NSString *pendingThemeImportMode;
 @property (nonatomic, copy) NSString *pendingSnowBoardLiteImportName;
 @end
@@ -9242,13 +9380,20 @@ static NSString * const kTelegramLogoSVG =
         self.pendingSnowBoardLiteImportName =
             [name stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         self.pendingThemeImportMode = @"sbl";
-        UTType *zipType = [UTType typeWithFilenameExtension:@"zip"];
-        UTType *debType = [UTType typeWithFilenameExtension:@"deb"];
-        NSMutableArray<UTType *> *types = [NSMutableArray arrayWithObject:UTTypeFolder];
-        if (zipType) [types addObject:zipType];
-        if (debType) [types addObject:debType];
+        NSMutableArray<UTType *> *types = [NSMutableArray arrayWithObjects:UTTypeFolder, UTTypeData, UTTypeItem, nil];
+        NSArray<NSString *> *archiveTypeIDs = @[
+            @"public.archive",
+            @"public.zip-archive",
+            @"com.pkware.zip-archive",
+            @"org.debian.binary-package"
+        ];
+        for (NSString *typeID in archiveTypeIDs) {
+            UTType *type = [UTType typeWithIdentifier:typeID];
+            if (type) [types addObject:type];
+        }
         UIDocumentPickerViewController *picker =
-            [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types];
+            [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types
+                                                                        asCopy:YES];
         picker.delegate = self;
         picker.allowsMultipleSelection = NO;
         [self presentViewController:picker animated:YES completion:nil];
@@ -9709,9 +9854,19 @@ static NSString * const kTelegramLogoSVG =
     }
     if (!removed) return;
 
+    NSMutableOrderedSet<NSString *> *deleteCandidates = [NSMutableOrderedSet orderedSet];
     NSString *path = removed[@"path"];
-    if (path.length > 0) {
-        [NSFileManager.defaultManager removeItemAtPath:path error:nil];
+    if (path.length > 0) [deleteCandidates addObject:path];
+    NSString *iconsPath = removed[@"iconsPath"];
+    if (iconsPath.length > 0) [deleteCandidates addObject:iconsPath.stringByDeletingLastPathComponent];
+    NSString *root = settings_sbl_themes_root_for_ui();
+    if (root.length > 0) [deleteCandidates addObject:[root stringByAppendingPathComponent:themeID]];
+
+    BOOL removedFiles = NO;
+    for (NSString *candidate in deleteCandidates) {
+        if (settings_sbl_remove_theme_dir_if_safe(candidate)) {
+            removedFiles = YES;
+        }
     }
     settings_sbl_save_manifest(next);
 
@@ -9724,8 +9879,9 @@ static NSString * const kTelegramLogoSVG =
         }
         [d synchronize];
     }
-    log_user("[SBL] Removed imported theme: %s.\n",
-             [removed[@"name"] UTF8String] ?: "unknown");
+    log_user("[SBL] Removed imported theme: %s%s.\n",
+             [removed[@"name"] UTF8String] ?: "unknown",
+             removedFiles ? "" : " (manifest only)");
     [self reloadSnowBoardLiteSectionAndQueue];
 }
 
@@ -10346,6 +10502,35 @@ static NSString * const kTelegramLogoSVG =
     log_user("[SBL] Theme download cancelled\n");
 }
 
+- (void)presentSnowBoardLiteLocalImportLoadingWithCompletion:(dispatch_block_t)completion
+{
+    CyanideCenteredLoadingViewController *loading = [[CyanideCenteredLoadingViewController alloc] init];
+    loading.titleText = @"Importing Theme";
+    loading.statusText = @"Extracting archive and scanning IconBundles";
+    loading.iconSymbolName = @"archivebox.fill";
+    loading.accentColor = UIColor.systemMintColor;
+    loading.modalPresentationStyle = UIModalPresentationOverFullScreen;
+    loading.modalTransitionStyle = UIModalTransitionStyleCrossDissolve;
+    self.sblLocalImportLoadingController = loading;
+    [[self livewpPresentationHost] presentViewController:loading animated:YES completion:completion];
+}
+
+- (void)dismissSnowBoardLiteLocalImportLoadingWithCompletion:(dispatch_block_t)completion
+{
+    CyanideCenteredLoadingViewController *loading = self.sblLocalImportLoadingController;
+    self.sblLocalImportLoadingController = nil;
+    if (!loading) {
+        if (completion) completion();
+        return;
+    }
+    loading.view.userInteractionEnabled = NO;
+    if (loading.presentingViewController) {
+        [loading dismissViewControllerAnimated:YES completion:completion];
+    } else if (completion) {
+        completion();
+    }
+}
+
 - (NSString *)sblSafeDownloadedThemeNameFromURL:(NSURL *)url response:(NSURLResponse *)response
 {
     NSString *name = response.suggestedFilename.length ? response.suggestedFilename : url.lastPathComponent;
@@ -10368,6 +10553,22 @@ static NSString * const kTelegramLogoSVG =
                              sourceType:(NSString *)sourceType
                                   error:(NSError **)error
 {
+    static const unsigned long long kSnowBoardLiteMaxArchiveBytes = 200ULL * 1024ULL * 1024ULL;
+    NSDictionary *attrs = [NSFileManager.defaultManager attributesOfItemAtPath:url.path error:error];
+    if (!attrs) return NO;
+    unsigned long long fileSize = attrs.fileSize;
+    if (fileSize > kSnowBoardLiteMaxArchiveBytes) {
+        if (error) {
+            NSString *message = [NSString stringWithFormat:
+                @"SnowBoard Lite archive is %@. Maximum supported size is 200 MB.",
+                settings_livewp_file_size_text(fileSize)];
+            *error = [NSError errorWithDomain:@"SnowBoardLite"
+                                         code:200
+                                     userInfo:@{NSLocalizedDescriptionKey: message}];
+        }
+        return NO;
+    }
+
     NSString *tmpName = [NSString stringWithFormat:@"sbl-download-extract-%llu",
                          (unsigned long long)(NSDate.date.timeIntervalSince1970 * 1000.0)];
     NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:tmpName];
@@ -10797,64 +10998,65 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
     }
 
     if ([themeImportMode isEqualToString:@"sbl"]) {
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-            NSError *sblErr = nil;
-            BOOL ok = NO;
-            NSString *displayName = sblManualName.length ? sblManualName : url.lastPathComponent;
-            if (displayName.length == 0) displayName = @"Imported Theme";
-            if (isDir) {
-                ok = settings_sbl_import_folder_theme_named(url,
-                                                            displayName,
-                                                            @"folder",
-                                                            &sblErr);
-            } else {
-                NSString *tmpName = [NSString stringWithFormat:@"sbl-extract-%llu",
-                                     (unsigned long long)(NSDate.date.timeIntervalSince1970 * 1000.0)];
-                NSString *tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:tmpName];
-                ok = SBLExtractArchiveToDirectory(url, tmp, &sblErr);
-                if (ok) {
+        [self presentSnowBoardLiteLocalImportLoadingWithCompletion:^{
+            dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+                NSError *sblErr = nil;
+                BOOL ok = NO;
+                NSString *displayName = sblManualName.length ? sblManualName : url.lastPathComponent;
+                if (displayName.length == 0) displayName = @"Imported Theme";
+                if (isDir) {
+                    ok = settings_sbl_import_folder_theme_named(url,
+                                                                displayName,
+                                                                @"folder",
+                                                                &sblErr);
+                } else {
                     NSString *sourceType = url.pathExtension.lowercaseString ?: @"archive";
-                    ok = settings_sbl_import_folder_theme_named([NSURL fileURLWithPath:tmp],
-                                                               displayName,
-                                                               sourceType,
-                                                               &sblErr);
+                    if ([sourceType isEqualToString:@"zip"] || [sourceType isEqualToString:@"deb"]) {
+                        ok = [self importSnowBoardLiteArchiveAtURL:url
+                                                        displayName:displayName
+                                                         sourceType:sourceType
+                                                              error:&sblErr];
+                    } else {
+                        sblErr = settings_sbl_error(51, @"Choose a folder, .zip, or .deb that contains IconBundles.");
+                    }
                 }
-                [NSFileManager.defaultManager removeItemAtPath:tmp error:nil];
-            }
-            if (scoped) [url stopAccessingSecurityScopedResource];
+                if (scoped) [url stopAccessingSecurityScopedResource];
 
-            dispatch_async(dispatch_get_main_queue(), ^{
-                if (!ok) {
-                    NSString *msg = sblErr.localizedDescription ?: @"Choose a folder, .zip, or .deb that contains IconBundles.";
-                    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Import Failed"
-                                                                                 message:msg
-                                                                          preferredStyle:UIAlertControllerStyleAlert];
-                    [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                    [self presentViewController:ac animated:YES completion:nil];
-                    return;
-                }
-                [self reloadSnowBoardLiteSectionAndQueue];
-                NSDictionary *theme = settings_sbl_selected_theme();
-                NSString *name = settings_snowboardlite_selected_theme_display_name();
-                NSNumber *iconCount = theme[@"iconCount"] ?: @0;
-                NSNumber *iconBundlesCount = theme[@"iconBundlesCount"] ?: @0;
-                NSNumber *skippedCount = theme[@"skippedCount"] ?: @0;
-                NSNumber *duplicateCount = theme[@"duplicateCount"] ?: @0;
-                NSString *sourceType = theme[@"sourceType"] ?: @"theme";
-                UIAlertController *ac = [UIAlertController
-                    alertControllerWithTitle:@"Theme Imported"
-                                     message:[NSString stringWithFormat:@"\"%@\" is now active.\n\nImported %@ icons from %@ IconBundles folder(s). Source: %@. Skipped %@ file(s), including %@ duplicate bundle ID(s).\n\nToggle SnowBoard Lite on and tap Apply Tweaks to use it.",
-                                              name,
-                                              iconCount,
-                                              iconBundlesCount,
-                                              sourceType,
-                                              skippedCount,
-                                              duplicateCount]
-                              preferredStyle:UIAlertControllerStyleAlert];
-                [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-                [self presentViewController:ac animated:YES completion:nil];
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self dismissSnowBoardLiteLocalImportLoadingWithCompletion:^{
+                        if (!ok) {
+                            NSString *msg = sblErr.localizedDescription ?: @"Choose a folder, .zip, or .deb that contains IconBundles.";
+                            UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Import Failed"
+                                                                                         message:msg
+                                                                                  preferredStyle:UIAlertControllerStyleAlert];
+                            [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                            [self presentViewController:ac animated:YES completion:nil];
+                            return;
+                        }
+                        [self reloadSnowBoardLiteSectionAndQueue];
+                        NSDictionary *theme = settings_sbl_selected_theme();
+                        NSString *name = settings_snowboardlite_selected_theme_display_name();
+                        NSNumber *iconCount = theme[@"iconCount"] ?: @0;
+                        NSNumber *iconBundlesCount = theme[@"iconBundlesCount"] ?: @0;
+                        NSNumber *skippedCount = theme[@"skippedCount"] ?: @0;
+                        NSNumber *duplicateCount = theme[@"duplicateCount"] ?: @0;
+                        NSString *sourceType = theme[@"sourceType"] ?: @"theme";
+                        UIAlertController *ac = [UIAlertController
+                            alertControllerWithTitle:@"Theme Imported"
+                                             message:[NSString stringWithFormat:@"\"%@\" is now active.\n\nImported %@ icons from %@ IconBundles folder(s). Source: %@. Skipped %@ file(s), including %@ duplicate bundle ID(s).\n\nToggle SnowBoard Lite on and tap Apply Tweaks to use it.",
+                                                      name,
+                                                      iconCount,
+                                                      iconBundlesCount,
+                                                      sourceType,
+                                                      skippedCount,
+                                                      duplicateCount]
+                                      preferredStyle:UIAlertControllerStyleAlert];
+                        [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                        [self presentViewController:ac animated:YES completion:nil];
+                    }];
+                });
             });
-        });
+        }];
         return;
     }
     
