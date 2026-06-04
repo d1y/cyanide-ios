@@ -338,38 +338,46 @@ BOOL settings_sbl_import_folder_theme_named(NSURL *url,
             if (![fileURL.pathExtension.lowercaseString isEqualToString:@"png"]) continue;
             discovered++;
             BOOL usedAlias = NO;
-            NSString *bundleID = CNDMappedIOSBundleIDForIconName(fileURL.lastPathComponent,
-                                                                 &usedAlias);
-            if (bundleID.length == 0) {
+            NSArray<NSString *> *bundleIDs = CNDMappedIOSBundleIDsForIconName(fileURL.lastPathComponent,
+                                                                              &usedAlias);
+            if (bundleIDs.count == 0) {
                 skipped++;
                 if (skippedSamples.count < 8) {
                     [skippedSamples addObject:fileURL.lastPathComponent ?: @"unknown.png"];
                 }
                 continue;
             }
-            if ([seen containsObject:bundleID]) {
-                duplicates++;
-                skipped++;
-                if (skippedSamples.count < 8) {
-                    [skippedSamples addObject:[NSString stringWithFormat:@"%@ (duplicate %@)",
-                                               fileURL.lastPathComponent ?: @"unknown.png",
-                                               bundleID]];
+            NSMutableSet<NSString *> *fileTargets = [NSMutableSet setWithCapacity:bundleIDs.count];
+            BOOL copiedAny = NO;
+            for (NSString *bundleID in bundleIDs) {
+                if (bundleID.length == 0 || [fileTargets containsObject:bundleID]) continue;
+                [fileTargets addObject:bundleID];
+                if ([seen containsObject:bundleID]) {
+                    duplicates++;
+                    skipped++;
+                    if (skippedSamples.count < 8) {
+                        [skippedSamples addObject:[NSString stringWithFormat:@"%@ (duplicate %@)",
+                                                   fileURL.lastPathComponent ?: @"unknown.png",
+                                                   bundleID]];
+                    }
+                    continue;
                 }
-                continue;
-            }
-            NSString *dstName = [bundleID stringByAppendingPathExtension:@"png"];
-            NSString *dst = [iconsDir stringByAppendingPathComponent:dstName];
-            if ([fm copyItemAtURL:fileURL toURL:[NSURL fileURLWithPath:dst] error:nil]) {
-                [seen addObject:bundleID];
-                imported++;
-                if (usedAlias) aliasMapped++;
-            } else {
-                skipped++;
-                if (skippedSamples.count < 8) {
-                    [skippedSamples addObject:[NSString stringWithFormat:@"%@ (copy failed)",
-                                               fileURL.lastPathComponent ?: @"unknown.png"]];
+                NSString *dstName = [bundleID stringByAppendingPathExtension:@"png"];
+                NSString *dst = [iconsDir stringByAppendingPathComponent:dstName];
+                if ([fm copyItemAtURL:fileURL toURL:[NSURL fileURLWithPath:dst] error:nil]) {
+                    [seen addObject:bundleID];
+                    copiedAny = YES;
+                    imported++;
+                    if (usedAlias) aliasMapped++;
+                } else {
+                    skipped++;
+                    if (skippedSamples.count < 8) {
+                        [skippedSamples addObject:[NSString stringWithFormat:@"%@ (copy failed)",
+                                                   fileURL.lastPathComponent ?: @"unknown.png"]];
+                    }
                 }
             }
+            if (!copiedAny && fileTargets.count == 0) skipped++;
         }
     }
 

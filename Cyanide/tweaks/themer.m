@@ -924,9 +924,10 @@ static NSDictionary<NSString *, NSData *> *themer_normalized_theme_data(NSDictio
         }
 
         BOOL usedAlias = NO;
-        NSString *mapped = CNDMappedIOSBundleIDForIconName(key, &usedAlias);
-        NSString *target = mapped.length > 0 ? mapped : key;
-        if (target.length > 0 && !out[target]) {
+        NSArray<NSString *> *mappedTargets = CNDMappedIOSBundleIDsForIconName(key, &usedAlias);
+        if (mappedTargets.count == 0) mappedTargets = @[key];
+        for (NSString *target in mappedTargets) {
+            if (target.length == 0 || out[target]) continue;
             out[target] = data;
             if (usedAlias) aliases++;
         }
@@ -2433,8 +2434,9 @@ bool themer_apply_in_session(const char *themePath)
             [aliasTargetBundles addObject:@"com.autonavi.amap"];
         }
         BOOL usedAlias = NO;
-        NSString *mapped = CNDMappedIOSBundleIDForIconName(f, &usedAlias);
-        if (mapped.length > 0) {
+        NSArray<NSString *> *mappedTargets = CNDMappedIOSBundleIDsForIconName(f, &usedAlias);
+        for (NSString *mapped in mappedTargets) {
+            if (mapped.length == 0) continue;
             if ([mapped.lowercaseString hasPrefix:@"com.apple."]) {
                 [appleSystemBundles addObject:mapped];
             }

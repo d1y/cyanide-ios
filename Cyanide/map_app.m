@@ -514,6 +514,98 @@ static NSDictionary<NSString *, NSString *> *CNDAppIconAliases(void)
             @"smzdm": @"com.smzdm.client.iphone",
             @"什么值得买": @"com.smzdm.client.iphone",
             @"com.smzdm.client.android": @"com.smzdm.client.iphone",
+
+            // User-local SmartisanOS theme compatibility.
+            // These source icons exist in SmartisanOS.theme/IconBundles and are
+            // used as closest semantic matches for apps without dedicated art.
+            @"com.kapinote.ai": @"com.kapinote.ai",
+            @"qnq.nuosike.sign": @"qnq.nuosike.sign",
+            @"com.danbo.dbxq2": @"com.danbo.dbxq2",
+            @"jxd.devapp.ireadnote": @"jxd.devapp.iReadNote",
+            @"ireadnote": @"jxd.devapp.iReadNote",
+            @"爱阅记": @"jxd.devapp.iReadNote",
+            @"app.nicegram": @"app.nicegram",
+            @"app.swiftgram.ios": @"app.swiftgram.ios",
+            @"com.swiftgram.swiftgram": @"app.swiftgram.ios",
+            @"swiftgram": @"app.swiftgram.ios",
+            @"nicegram": @"app.nicegram",
+
+            // Common China carrier package aliases.
+            @"cn.10086.app": @"com.chinamobile.cmcc",
+            @"com.greenpoint.android.mc10086.activity": @"com.chinamobile.cmcc",
+            @"com.chinamobile.cmcc": @"com.chinamobile.cmcc",
+            @"com.sinovatech.unicom.ui": @"com.sinovatech.unicom.ui",
+            @"com.chinaunicom.mobilebusiness": @"com.sinovatech.unicom.ui",
+            @"com.chinaunicom.mobileb": @"com.sinovatech.unicom.ui",
+            @"ctclient": @"com.chinatelecom.189client",
+            @"com.chinatelecom.189client": @"com.chinatelecom.189client",
+            @"com.chinatelecom.bestpayclient": @"com.chinatelecom.189client",
+        };
+    });
+    return aliases;
+}
+
+static NSDictionary<NSString *, NSArray<NSString *> *> *CNDAppIconMultiAliases(void)
+{
+    static NSDictionary<NSString *, NSArray<NSString *> *> *aliases = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        aliases = @{
+            @"ph.telegra.telegraph": @[
+                @"ph.telegra.Telegraph",
+                @"app.nicegram",
+                @"app.swiftgram.ios",
+            ],
+            @"org.telegram.messenger": @[
+                @"ph.telegra.Telegraph",
+                @"app.nicegram",
+                @"app.swiftgram.ios",
+            ],
+            @"telegram": @[
+                @"ph.telegra.Telegraph",
+                @"app.nicegram",
+                @"app.swiftgram.ios",
+            ],
+            @"me.bakumon.moneykeeper": @[
+                @"me.bakumon.moneykeeper",
+                @"com.kapinote.ai",
+            ],
+            @"com.blackcat.app": @[
+                @"com.Blackcat.app",
+                @"com.macxk.KMusic",
+            ],
+            @"com.tencent.kittypong": @[
+                @"com.tencent.kittypong",
+                @"com.sigkitten.litter",
+            ],
+            @"com.smartisan.reader": @[
+                @"com.smartisan.reader",
+                @"jxd.devapp.iReadNote",
+            ],
+            @"cn.10086.app": @[
+                @"com.chinamobile.cmcc",
+                @"cn.10086.app",
+            ],
+            @"com.chinamobile.cmcc": @[
+                @"com.chinamobile.cmcc",
+                @"cn.10086.app",
+            ],
+            @"com.sinovatech.unicom.ui": @[
+                @"com.sinovatech.unicom.ui",
+                @"com.chinaunicom.mobilebusiness",
+            ],
+            @"com.chinaunicom.mobilebusiness": @[
+                @"com.sinovatech.unicom.ui",
+                @"com.chinaunicom.mobilebusiness",
+            ],
+            @"ctclient": @[
+                @"com.chinatelecom.189client",
+                @"CtClient",
+            ],
+            @"com.chinatelecom.bestpayclient": @[
+                @"com.chinatelecom.189client",
+                @"com.chinatelecom.bestpayclient",
+            ],
         };
     });
     return aliases;
@@ -552,4 +644,26 @@ NSString *CNDMappedIOSBundleIDForIconName(NSString *name, BOOL *usedAlias)
 
     if (![base containsString:@"."]) return nil;
     return base.length > 0 ? base : nil;
+}
+
+NSArray<NSString *> *CNDMappedIOSBundleIDsForIconName(NSString *name, BOOL *usedAlias)
+{
+    if (usedAlias) *usedAlias = NO;
+    if (name.length == 0) return @[];
+
+    NSString *base = CNDIconBaseName(name);
+    NSDictionary<NSString *, NSArray<NSString *> *> *multiAliases = CNDAppIconMultiAliases();
+    NSArray<NSString *> *mapped = multiAliases[base.lowercaseString];
+    if (!mapped) mapped = multiAliases[CNDCompactAliasKey(base)];
+    if (mapped.count > 0) {
+        if (usedAlias) {
+            *usedAlias = mapped.count != 1 || ![mapped.firstObject isEqualToString:base];
+        }
+        return mapped;
+    }
+
+    BOOL singleUsedAlias = NO;
+    NSString *single = CNDMappedIOSBundleIDForIconName(name, &singleUsedAlias);
+    if (usedAlias) *usedAlias = singleUsedAlias;
+    return single.length > 0 ? @[single] : @[];
 }
