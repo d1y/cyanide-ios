@@ -29,6 +29,7 @@ Tweaks added in this fork:
 - **SnowBoard Lite**: SnowBoard-style icon theme library with built-in iOS 6
   theme, local folder/.zip/.deb import, URL import, and online theme downloads.
 - **LiveWP**: MP4/MOV/M4V video wallpaper for the lock screen and home screen.
+- **App Switcher Grid**: grid-style app switcher for this session.
 
 
 Links:

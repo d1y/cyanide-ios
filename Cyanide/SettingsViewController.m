@@ -24,6 +24,7 @@
 #import "tweaks/snowboardlite.h"
 #import "tweaks/livewp.h"
 #import "tweaks/gravitylite.h"
+#import "tweaks/appswitchergrid.h"
 
 #import <objc/runtime.h>
 #import <CoreMotion/CoreMotion.h>
@@ -802,6 +803,8 @@ NSString * const kSettingsAxonLiteEnabled = @"AxonLiteEnabled";
 
 NSString * const kSettingsTypeBannerEnabled = @"TypeBannerEnabled";
 
+NSString * const kSettingsAppSwitcherGridEnabled = @"AppSwitcherGridEnabled";
+
 NSString * const kSettingsGravityLiteEnabled = @"GravityLiteEnabled";
 NSString * const kSettingsGravityLiteDockEnabled = @"GravityLiteDockEnabled";
 NSString * const kSettingsGravityLiteMagnitudePct = @"GravityLiteMagnitudePct";
@@ -1169,6 +1172,7 @@ static NSArray<NSString *> *settings_rc_backed_tweak_keys(void)
             kSettingsRSSIDisplayEnabled,
             kSettingsAxonLiteEnabled,
             kSettingsTypeBannerEnabled,
+            kSettingsAppSwitcherGridEnabled,
             kSettingsGravityLiteEnabled,
             kSettingsPowercuffEnabled,
             kSettingsDSDisableAppLibrary,
@@ -1181,7 +1185,6 @@ static NSArray<NSString *> *settings_rc_backed_tweak_keys(void)
             kSettingsThemerEnabled,
             kSettingsSnowBoardLiteEnabled,
             kSettingsLiveWPEnabled,
-            kSettingsNiceBarLiteEnabled,
         ];
     });
     return keys;
@@ -1512,6 +1515,7 @@ static void settings_forget_springboard_tweak_state_locked(void)
     rssidisplay_forget_remote_state();
     axonlite_forget_remote_state();
     typebanner_forget_remote_state();
+    appswitchergrid_forget_remote_state();
     killallapps_forget_remote_state();
     themer_forget_remote_state();
     livewp_forget_remote_state();
@@ -1543,6 +1547,14 @@ static void settings_stop_springboard_tweaks_locked(const char *reason,
            reason ?: "SpringBoard cleanup",
            springboardWillDie ? " (fast)" : "",
            axonStopped);
+
+    bool appSwitcherStopped = springboardWillDie
+        ? false
+        : appswitchergrid_stop_in_session();
+    printf("[SETTINGS] %s App Switcher Grid stop%s result=%d\n",
+           reason ?: "SpringBoard cleanup",
+           springboardWillDie ? " (skipped; SpringBoard dying)" : "",
+           appSwitcherStopped);
 
     bool statStopped = statbar_stop_in_session();
     printf("[SETTINGS] %s StatBar stop result=%d\n",
@@ -1868,6 +1880,8 @@ static BOOL settings_has_persistent_springboard_remote_call_user(void)
     NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
     return ([d boolForKey:kSettingsThemerEnabled] &&
             settings_tweak_is_applied(kSettingsThemerEnabled)) ||
+           ([d boolForKey:kSettingsAppSwitcherGridEnabled] &&
+            settings_tweak_is_applied(kSettingsAppSwitcherGridEnabled)) ||
            ([d boolForKey:kSettingsSnowBoardLiteEnabled] &&
             settings_tweak_is_applied(kSettingsSnowBoardLiteEnabled));
 }
@@ -5196,6 +5210,11 @@ static BOOL settings_key_is_typebanner(NSString *key)
     return [key isEqualToString:kSettingsTypeBannerEnabled];
 }
 
+static BOOL settings_key_is_appswitchergrid(NSString *key)
+{
+    return [key isEqualToString:kSettingsAppSwitcherGridEnabled];
+}
+
 static BOOL settings_key_is_gravitylite(NSString *key)
 {
     return [key isEqualToString:kSettingsGravityLiteEnabled] ||
@@ -5228,6 +5247,7 @@ static BOOL settings_key_affects_package_state(NSString *key)
            [key isEqualToString:kSettingsRSSIDisplayEnabled] ||
            [key isEqualToString:kSettingsAxonLiteEnabled] ||
            [key isEqualToString:kSettingsTypeBannerEnabled] ||
+           [key isEqualToString:kSettingsAppSwitcherGridEnabled] ||
            [key isEqualToString:kSettingsThemerEnabled] ||
            [key isEqualToString:kSettingsSnowBoardLiteEnabled] ||
            [key isEqualToString:kSettingsLiveWPEnabled] ||
@@ -5284,6 +5304,32 @@ static void settings_schedule_live_apply_for_key(NSString *key)
                 }
                 typebanner_forget_remote_state();
             });
+        }
+        return;
+    }
+
+    if (settings_key_is_appswitchergrid(key)) {
+        if ([d boolForKey:kSettingsAppSwitcherGridEnabled] && g_springboard_rc_ready) {
+            dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                @synchronized (settings_rc_lock()) {
+                    if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
+                    bool ok = appswitchergrid_apply_in_session();
+                    settings_mark_tweak_applied(kSettingsAppSwitcherGridEnabled,
+                                                ok && [d boolForKey:kSettingsAppSwitcherGridEnabled]);
+                    printf("[SETTINGS] live App Switcher Grid apply result=%d\n", ok);
+                }
+                settings_notify_package_queue_changed_async();
+            });
+        } else if (![d boolForKey:kSettingsAppSwitcherGridEnabled]) {
+            settings_mark_tweak_applied(kSettingsAppSwitcherGridEnabled, NO);
+            settings_notify_package_queue_changed_async();
+            if (g_springboard_rc_ready) {
+                dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                    @synchronized (settings_rc_lock()) {
+                        if (g_springboard_rc_ready) appswitchergrid_stop_in_session();
+                    }
+                });
+            }
         }
         return;
     }
@@ -5705,6 +5751,8 @@ void settings_register_defaults(void)
 
         kSettingsTypeBannerEnabled: @NO,
 
+        kSettingsAppSwitcherGridEnabled: @NO,
+
         kSettingsGravityLiteEnabled: @NO,
         kSettingsGravityLiteDockEnabled: @YES,
         kSettingsGravityLiteMagnitudePct: @100,
@@ -5731,13 +5779,18 @@ void settings_register_defaults(void)
         kSettingsNanoMinPairingChipID: @(kNanoDefaultMinPairingChipID),
         kSettingsNanoMinQuickSwitch:   @(kNanoDefaultMinQuickSwitch),
     }];
-    // Signal Readouts ships behind the experimental gate. If the master
-    // experimental switch is off, force its enable bit off so a previously
-    // enabled session doesn't survive a reset of the gate.
-    if (![defaults boolForKey:kSettingsExperimentalTweaksEnabled] &&
-        [defaults boolForKey:kSettingsRSSIDisplayEnabled]) {
-        [defaults setBool:NO forKey:kSettingsRSSIDisplayEnabled];
-        [defaults synchronize];
+    // Experimental tweaks must not survive after the master gate is disabled.
+    if (![defaults boolForKey:kSettingsExperimentalTweaksEnabled]) {
+        BOOL changed = NO;
+        for (NSString *key in @[ kSettingsRSSIDisplayEnabled,
+                                 kSettingsTypeBannerEnabled,
+                                 kSettingsAppSwitcherGridEnabled ]) {
+            if ([defaults boolForKey:key]) {
+                [defaults setBool:NO forKey:key];
+                changed = YES;
+            }
+        }
+        if (changed) [defaults synchronize];
     }
     if ([defaults boolForKey:kSettingsThemerEnabled] &&
         !settings_themer_has_selected_theme()) {
@@ -5791,6 +5844,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             BOOL rssiEnabled = settings_rssi_install_allowed() && [d boolForKey:kSettingsRSSIDisplayEnabled];
             BOOL axonLiteEnabled = [d boolForKey:kSettingsAxonLiteEnabled];
             BOOL typeBannerEnabled = [d boolForKey:kSettingsTypeBannerEnabled];
+            BOOL appSwitcherGridEnabled = [d boolForKey:kSettingsAppSwitcherGridEnabled];
             BOOL gravityLiteEnabled = [d boolForKey:kSettingsGravityLiteEnabled];
             BOOL liveWPEnabled = [d boolForKey:kSettingsLiveWPEnabled];
             BOOL runSBC = settings_enabled_tweak_should_run(d, kSettingsSBCEnabled, springBoardPendingOnly);
@@ -5801,12 +5855,13 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             BOOL runRSSI = settings_rssi_install_allowed() && settings_enabled_tweak_should_run(d, kSettingsRSSIDisplayEnabled, springBoardPendingOnly);
             BOOL runAxonLite = settings_enabled_tweak_should_run(d, kSettingsAxonLiteEnabled, springBoardPendingOnly);
             BOOL runTypeBanner = settings_enabled_tweak_should_run(d, kSettingsTypeBannerEnabled, springBoardPendingOnly);
+            BOOL runAppSwitcherGrid = settings_enabled_tweak_should_run(d, kSettingsAppSwitcherGridEnabled, springBoardPendingOnly);
             BOOL runGravityLite = settings_enabled_tweak_should_run(d, kSettingsGravityLiteEnabled, springBoardPendingOnly);
             BOOL runThemer = settings_enabled_tweak_should_run(d, kSettingsThemerEnabled, springBoardPendingOnly);
             BOOL runSnowBoardLite = settings_enabled_tweak_should_run(d, kSettingsSnowBoardLiteEnabled, springBoardPendingOnly);
             BOOL runLayoutExtras = settings_enabled_tweak_should_run(d, kSettingsLayoutExtrasEnabled, springBoardPendingOnly);
             BOOL runLiveWP = settings_enabled_tweak_should_run(d, kSettingsLiveWPEnabled, springBoardPendingOnly);
-            BOOL needsSpringBoardWork = runSBC || runDarkTweaks || runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runLayoutExtras || runTypeBanner || runGravityLite || runThemer || runSnowBoardLite || runLiveWP;
+            BOOL needsSpringBoardWork = runSBC || runDarkTweaks || runStatBar || runNSBar || runNiceBarLite || runRSSI || runAxonLite || runLayoutExtras || runTypeBanner || runAppSwitcherGrid || runGravityLite || runThemer || runSnowBoardLite || runLiveWP;
             BOOL runSandboxEscape = [d boolForKey:kSettingsRunSandboxEscape] && (!pendingOnly || needsSpringBoardWork);
             // TypeBanner prewarms its hidden SpringBoard window during Apply
             // and reuses the open SpringBoard session for text-only updates.
@@ -5829,13 +5884,14 @@ static void settings_run_actions_internal(BOOL pendingOnly)
             if (runRSSI) total++;
             if (runAxonLite) total++;
             if (runTypeBanner) total++;
+            if (runAppSwitcherGrid) total++;
             if (runGravityLite) total++;
             if (runLiveWP) total++;
             NSUInteger step = 0;
 
             settings_log_run_context();
             log_user("[RUN] Verbose trace active; raw debug stream is mirrored into the app log.\n");
-            log_user("[PLAN] stages=%lu springboard=%s sbc=%s dark=%s statbar=%s nicebar=%s rssi=%s axon=%s gravity=%s power=%s livewp=%s\n",
+            log_user("[PLAN] stages=%lu springboard=%s sbc=%s dark=%s statbar=%s nicebar=%s rssi=%s axon=%s switcherGrid=%s gravity=%s power=%s livewp=%s\n",
                      (unsigned long)total,
                      needsSpringBoard ? "yes" : "no",
                      runSBC ? "yes" : "no",
@@ -5844,6 +5900,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                      runNiceBarLite ? "yes" : "no",
                      runRSSI ? "yes" : "no",
                      runAxonLite ? "yes" : "no",
+                     runAppSwitcherGrid ? "yes" : "no",
                      runGravityLite ? "yes" : "no",
                      runPowercuff ? "yes" : "no",
                      runLiveWP ? "yes" : "no");
@@ -5903,6 +5960,11 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                 if (!rssiEnabled) g_rssi_live_stop_requested = 1;
                 if (!axonLiteEnabled) g_axonlite_live_stop_requested = 1;
                 if (!typeBannerEnabled) g_typebanner_live_stop_requested = 1;
+                if (!appSwitcherGridEnabled && g_springboard_rc_ready) {
+                    @synchronized (settings_rc_lock()) {
+                        if (g_springboard_rc_ready) appswitchergrid_stop_in_session();
+                    }
+                }
                 if (!gravityLiteEnabled) {
                     __sync_lock_test_and_set(&g_gravitylite_background_armed, 0);
                     settings_stop_gravity_motion();
@@ -5931,7 +5993,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                 log_user("[OK] Sandbox-extension patch stage finished.\n");
                 cyanide_upload_log_milestone(@"sandbox-ext-patched");
             }
-            printf("[SETTINGS] actions escape=%d patch=%d sbc=%d dock=%ld hs=%ldx%ld hideLabels=%d dark=%d power=%d level=%s statbar=%d showTemp=%d celsius=%d showCPU=%d showRAM=%d showNet=%d rssi=%d rssiWifi=%d rssiCell=%d axon=%d rcReady=%d\n",
+            printf("[SETTINGS] actions escape=%d patch=%d sbc=%d dock=%ld hs=%ldx%ld hideLabels=%d dark=%d power=%d level=%s statbar=%d showTemp=%d celsius=%d showCPU=%d showRAM=%d showNet=%d rssi=%d rssiWifi=%d rssiCell=%d axon=%d appSwitcherGrid=%d rcReady=%d\n",
                    runSandboxEscape,
                    patchSandboxExt,
                    runSBC,
@@ -5952,6 +6014,7 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                    [d boolForKey:kSettingsRSSIDisplayWifi],
                    [d boolForKey:kSettingsRSSIDisplayCell],
                    runAxonLite,
+                   runAppSwitcherGrid,
                    g_springboard_rc_ready);
 
             if (runPowercuff) {
@@ -6184,6 +6247,20 @@ static void settings_run_actions_internal(BOOL pendingOnly)
                         cyanide_upload_log_milestone(ok ? @"rssi-initial-applied" : @"rssi-initial-failed");
                     }
 
+                    if (runAppSwitcherGrid) {
+                        settings_progress(&step, total, "Enabling App Switcher Grid");
+                        bool ok = appswitchergrid_apply_in_session();
+                        settings_mark_tweak_applied(kSettingsAppSwitcherGridEnabled,
+                                                    ok && [d boolForKey:kSettingsAppSwitcherGridEnabled]);
+                        printf("[SETTINGS] App Switcher Grid result=%d\n", ok);
+                        log_user("%s App Switcher Grid %s.\n",
+                                 ok ? "[OK]" : "[WARN]",
+                                 ok ? "enabled for this SpringBoard session" : "did not apply cleanly");
+                        cyanide_upload_log_milestone(ok ? @"app-switcher-grid-applied" : @"app-switcher-grid-failed");
+                    } else if (!appSwitcherGridEnabled) {
+                        appswitchergrid_stop_in_session();
+                    }
+
                     if (runAxonLite) {
                         settings_progress(&step, total, "Starting Axon Lite notification hub");
                         bool ok = false;
@@ -6348,6 +6425,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionLiveWP,
     SectionGravityLite,
     SectionDragCoefficient,
+    SectionAppSwitcherGrid,
     SectionCount,
 };
 
@@ -8661,6 +8739,21 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     ];
 }
 
+- (NSArray<NSDictionary *> *)appSwitcherGridRows
+{
+    BOOL applied = settings_tweak_is_applied(kSettingsAppSwitcherGridEnabled);
+    return @[
+        @{ @"kind": @"info",
+           @"title": applied ? @"Current Session: Grid" : @"Current Session: Stock",
+           @"subtitle": @"This is a runtime-only SpringBoard method patch. It does not write system files; respring restores the stock app switcher." },
+        @{ @"kind": @"button",
+           @"title": @"Restore Stock Switcher",
+           @"subtitle": @"Restores the original switcher style in the active SpringBoard session when available.",
+           @"action": @"appswitchergrid-restore",
+           @"destructive": @YES },
+    ];
+}
+
 - (NSArray<NSDictionary *> *)gravityLiteRows
 {
     return @[
@@ -8932,6 +9025,9 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     } else if (section == SectionRSSI) {
         [out addObject:@{@"title": @"WiFi (bar count)", @"value": [d boolForKey:kSettingsRSSIDisplayWifi] ? @"On" : @"Off"}];
         [out addObject:@{@"title": @"Cellular (dBm)",   @"value": [d boolForKey:kSettingsRSSIDisplayCell] ? @"On" : @"Off"}];
+    } else if (section == SectionAppSwitcherGrid) {
+        [out addObject:@{@"title": @"Session style",
+                         @"value": settings_tweak_is_applied(kSettingsAppSwitcherGridEnabled) ? @"Grid" : @"Stock"}];
     } else if (section == SectionPowercuff) {
         NSString *lvl = [d stringForKey:kSettingsPowercuffLevel] ?: @"nominal";
         [out addObject:@{@"title": @"Level", @"value": lvl}];
@@ -8976,6 +9072,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         case SectionRSSI:      return self.rssiRows;
         case SectionAxonLite:  return self.axonLiteRows;
         case SectionTypeBanner: return self.typebannerRows;
+        case SectionAppSwitcherGrid: return self.appSwitcherGridRows;
         case SectionLiveWP:    return self.livewpRows;
         case SectionGravityLite: return self.gravityLiteRows;
         default: return @[];
@@ -8999,6 +9096,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         @{ @"title": @"Signal Display",     @"icon": @"antenna.radiowaves.left.and.right",   @"color": [UIColor systemBlueColor],   @"section": @(SectionRSSI), @"experimental": @YES },
         @{ @"title": @"Axon Lite",          @"icon": @"bell.badge.fill",                     @"color": [UIColor systemRedColor],    @"section": @(SectionAxonLite) },
         @{ @"title": @"TypeBanner",         @"icon": @"ellipsis.bubble.fill",                @"color": [UIColor systemTealColor],   @"section": @(SectionTypeBanner), @"experimental": @YES },
+        @{ @"title": @"App Switcher Grid",  @"icon": @"square.grid.2x2.fill",                @"color": [UIColor systemOrangeColor], @"section": @(SectionAppSwitcherGrid), @"experimental": @YES },
         @{ @"title": @"Cyanide Themer",     @"icon": @"paintpalette.fill",                   @"color": [UIColor systemPinkColor],   @"section": @(SectionThemer) },
         @{ @"title": @"SnowBoard Lite",     @"icon": @"square.stack.3d.up.fill",             @"color": [UIColor systemMintColor],   @"section": @(SectionSnowBoardLite) },
         @{ @"title": @"LiveWP",             @"icon": @"play.rectangle.fill",                 @"color": [UIColor systemPurpleColor], @"section": @(SectionLiveWP) },
@@ -9174,6 +9272,9 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     }
     if (s == SectionTypeBanner) {
         return @"Partial TypeMillennium port. Detection runs against imagent using original-thread RemoteCall probes, while SpringBoard renders a prewarmed banner window.";
+    }
+    if (s == SectionAppSwitcherGrid) {
+        return @"Experimental session-only runtime patch. It swizzles SpringBoard's switcher style method in memory, writes no system files, and a respring restores stock. App switcher animations may glitch or crash SpringBoard on unsupported builds.";
     }
     if (s == SectionThemer) {
         return @"Note: Cyanide Themer is still rough around the edges and may be glitchy. It will be iteratively improved to be more stable over time.\n\n"
@@ -11570,10 +11671,10 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
     cell.detailTextLabel.text = on
         ? @"Active — in-development tweaks unlocked. These probably don't "
           @"work yet; installing only adds risk, no benefit. Currently "
-          @"gates: Signal Readouts, TypeBanner."
+          @"gates: Signal Readouts, TypeBanner, App Switcher Grid."
         : @"In-development only. These tweaks likely don't work yet and "
           @"may never ship — turning this on only adds risk with no real "
-          @"benefit. Currently gates: Signal Readouts, TypeBanner.";
+          @"benefit. Currently gates: Signal Readouts, TypeBanner, App Switcher Grid.";
     cell.detailTextLabel.font = [UIFont systemFontOfSize:13.0];
     cell.detailTextLabel.textColor = on
         ? [UIColor.systemRedColor colorWithAlphaComponent:0.9]
@@ -11637,6 +11738,12 @@ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls
         settings_mark_tweak_applied(kSettingsRSSIDisplayEnabled, NO);
         settings_notify_package_queue_changed_async();
         settings_schedule_live_apply_for_key(kSettingsRSSIDisplayEnabled);
+    }
+    if ([d boolForKey:kSettingsAppSwitcherGridEnabled]) {
+        [d setBool:NO forKey:kSettingsAppSwitcherGridEnabled];
+        settings_mark_tweak_applied(kSettingsAppSwitcherGridEnabled, NO);
+        settings_notify_package_queue_changed_async();
+        settings_schedule_live_apply_for_key(kSettingsAppSwitcherGridEnabled);
     }
     [self reloadAfterExperimentalChange];
 }
@@ -14705,6 +14812,36 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
         }
         if ([action hasPrefix:@"nicebar-"]) {
             [self presentNiceBarTextEditorForSlot:[row[@"slot"] integerValue] action:action];
+        }
+        return;
+    }
+
+    if (indexPath.section == SectionAppSwitcherGrid) {
+        NSDictionary *row = [self rowsForSection:indexPath.section][indexPath.row];
+        if (![row[@"kind"] isEqualToString:@"button"]) return;
+        NSString *action = row[@"action"];
+        if ([action isEqualToString:@"appswitchergrid-restore"]) {
+            if (!g_springboard_rc_ready) {
+                log_user("[ASG] Restore needs an active SpringBoard session. Hit Run first, or respring to restore stock.\n");
+                return;
+            }
+            NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+            [d setBool:NO forKey:kSettingsAppSwitcherGridEnabled];
+            [d synchronize];
+            dispatch_async(dispatch_get_global_queue(0, 0), ^{
+                @synchronized (settings_rc_lock()) {
+                    if (settings_cleanup_in_progress() || !g_springboard_rc_ready) return;
+                    bool ok = appswitchergrid_stop_in_session();
+                    settings_mark_tweak_applied(kSettingsAppSwitcherGridEnabled, NO);
+                    log_user("%s App Switcher Grid restore %s.\n",
+                             ok ? "[OK]" : "[WARN]",
+                             ok ? "completed" : "did not find an active patch; respring restores stock");
+                }
+                settings_notify_package_queue_changed_async();
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    [self.tableView reloadData];
+                });
+            });
         }
         return;
     }

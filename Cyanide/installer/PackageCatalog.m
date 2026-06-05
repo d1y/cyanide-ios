@@ -24,6 +24,7 @@ static const NSInteger kSecSnowBoardLite = 16;
 static const NSInteger kSecLiveWP       = 17;
 static const NSInteger kSecGravityLite  = 18;
 static const NSInteger kSecDragCoefficient = 19;
+static const NSInteger kSecAppSwitcherGrid = 20;
 
 + (NSArray<Package *> *)allPackages
 {
@@ -153,6 +154,21 @@ static const NSInteger kSecDragCoefficient = 19;
                                           isNew:YES];
         typeBanner.experimental = YES;
         typeBanner.unstableWarning = @"⚠️ Experimental: extremely unstable and risky. Polls MobileSMS over RemoteCall every ~1.5s, opens SpringBoard sessions on state change, and is known to crash SpringBoard. Detection only fires while Messages.app is running. Battery cost is non-trivial.";
+
+        Package *appSwitcherGrid = [[Package alloc] initWithIdentifier:@"com.darksword.appswitchergrid"
+                                           name:@"App Switcher Grid"
+                               shortDescription:@"Grid-style app switcher for this session"
+                                longDescription:@"Applies a runtime-only SpringBoard method patch that makes the App Switcher report the grid/deck style used by SBDeckSwitcherModifier.\n\nThis does not write system files and does not persist across SpringBoard restarts. A respring restores the stock app switcher. The implementation is based on the RemoteCall approach used by rooootdev/lara."
+                                        version:version
+                                         author:@"rooootdev"
+                                       category:@"Experimental"
+                                     symbolName:@"square.grid.2x2.fill"
+                                           kind:PackageInstallKindToggle
+                                     enabledKey:kSettingsAppSwitcherGridEnabled
+                                          isNew:YES];
+        appSwitcherGrid.settingsSection = kSecAppSwitcherGrid;
+        appSwitcherGrid.experimental = YES;
+        appSwitcherGrid.unstableWarning = @"⚠️ Experimental: patches SpringBoard runtime methods in memory. It should be session-only and respring restores stock, but unsupported builds may glitch the app switcher or crash SpringBoard.";
 
         Package *themer = [[Package alloc] initWithIdentifier:@"com.darksword.themer"
                                            name:@"Cyanide Themer"
@@ -347,6 +363,7 @@ static const NSInteger kSecDragCoefficient = 19;
             axon,
             nanoRegistry,
             typeBanner,
+            appSwitcherGrid,
             themer,
             snowboardLite,
             liveWP,
