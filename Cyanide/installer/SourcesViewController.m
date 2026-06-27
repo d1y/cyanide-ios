@@ -382,7 +382,7 @@ static UIColor *category_color(NSString *cat)
             UINavigationController *nav = [vc isKindOfClass:UINavigationController.class] ? (UINavigationController *)vc : nil;
             if (!nav) return;
             [nav popToRootViewControllerAnimated:NO];
-            SettingsViewController *ql = [[SettingsViewController alloc] initWithUnderlyingSection:25 bundleTitle:@"QuickLoader"];
+            SettingsViewController *ql = [[SettingsViewController alloc] initWithUnderlyingSection:22 bundleTitle:@"QuickLoader"];
             ql.quickLoaderStandalone = YES;
             [nav pushViewController:ql animated:NO];
             tab.selectedIndex = i;

@@ -564,7 +564,7 @@ static const CGFloat kMargin = 20.0;
             UINavigationController *nav = [vc isKindOfClass:UINavigationController.class] ? (UINavigationController *)vc : nil;
             if (!nav) return;
             [nav popToRootViewControllerAnimated:NO];
-            SettingsViewController *ql = [[SettingsViewController alloc] initWithUnderlyingSection:21 bundleTitle:@"QuickLoader"];
+            SettingsViewController *ql = [[SettingsViewController alloc] initWithUnderlyingSection:22 bundleTitle:@"QuickLoader"];
             ql.quickLoaderStandalone = YES;
             [nav pushViewController:ql animated:NO];
             tab.selectedIndex = i;
