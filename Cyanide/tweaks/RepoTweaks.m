@@ -137,6 +137,19 @@ static BOOL repotweaks_is_https_url(NSString *urlString) {
     return [components.scheme.lowercaseString isEqualToString:@"https"] && components.host.length > 0;
 }
 
+static NSString *repotweaks_absolute_url(NSString *baseURL, NSString *relativeOrAbsoluteURL) {
+    if (![relativeOrAbsoluteURL isKindOfClass:NSString.class] || relativeOrAbsoluteURL.length == 0) return nil;
+    if (repotweaks_is_https_url(relativeOrAbsoluteURL)) return relativeOrAbsoluteURL;
+    NSURL *base = [NSURL URLWithString:baseURL];
+    if (!base) return nil;
+    NSURL *baseDir = [base URLByDeletingLastPathComponent];
+    if (!baseDir) return nil;
+    NSString *baseDirString = baseDir.absoluteString;
+    if (![baseDirString hasSuffix:@"/"]) baseDirString = [baseDirString stringByAppendingString:@"/"];
+    NSURL *absolute = [NSURL URLWithString:relativeOrAbsoluteURL relativeToURL:[NSURL URLWithString:baseDirString]];
+    return absolute.absoluteString;
+}
+
 static BOOL repotweaks_valid_identifier(NSString *name) {
     if (![name isKindOfClass:NSString.class] || name.length == 0) return NO;
     unichar first = [name characterAtIndex:0];
@@ -311,10 +324,6 @@ static NSDictionary *repotweaks_sanitized_tweak(id raw, NSString **errorMessage)
     NSString *scriptURL = repotweaks_string_or_empty(dict[@"scriptURL"]);
     if (tweakID.length == 0 || name.length == 0 || scriptURL.length == 0) {
         if (errorMessage) *errorMessage = @"Repo tweak is missing id, name, or scriptURL.";
-        return nil;
-    }
-    if (!repotweaks_is_https_url(scriptURL)) {
-        if (errorMessage) *errorMessage = @"Repo tweak scriptURL must be HTTPS.";
         return nil;
     }
 
@@ -853,13 +862,14 @@ void repotweaks_download_script(NSString *repoURL, NSString *tweakId, NSString *
     void (^finish)(BOOL) = ^(BOOL success) {
         if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(success); });
     };
+    NSString *resolved = repotweaks_absolute_url(repoURL, scriptURL);
     if (![tweakId isKindOfClass:NSString.class] || tweakId.length == 0 ||
-        !repotweaks_is_https_url(scriptURL)) {
+        !repotweaks_is_https_url(resolved)) {
         finish(NO);
         return;
     }
 
-    NSMutableURLRequest *request = repotweaks_uncached_request(scriptURL, 20.0);
+    NSMutableURLRequest *request = repotweaks_uncached_request(resolved, 20.0);
     if (!request) {
         finish(NO);
         return;
@@ -908,15 +918,16 @@ BOOL repotweaks_download_script_sync(NSString *repoURL,
                                      NSTimeInterval timeout,
                                      NSString **message) {
     if (message) *message = nil;
+    NSString *resolved = repotweaks_absolute_url(repoURL, scriptURL);
     if (![tweakId isKindOfClass:NSString.class] || tweakId.length == 0 ||
-        !repotweaks_is_https_url(scriptURL)) {
+        !repotweaks_is_https_url(resolved)) {
         if (message) *message = @"Invalid script URL.";
         return NO;
     }
 
     __block BOOL ok = NO;
     dispatch_semaphore_t sema = dispatch_semaphore_create(0);
-    repotweaks_download_script(repoURL, tweakId, scriptURL, ^(BOOL success) {
+    repotweaks_download_script(repoURL, tweakId, resolved, ^(BOOL success) {
         ok = success;
         dispatch_semaphore_signal(sema);
     });
