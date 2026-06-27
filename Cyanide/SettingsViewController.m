@@ -16535,6 +16535,9 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
             [d setBool:YES forKey:kSettingsQuickLoaderEnabled];
             settings_mark_tweak_needs_apply(kSettingsQuickLoaderEnabled);
             [d synchronize];
+            if (!settings_tweak_is_applied(kSettingsQuickLoaderEnabled)) {
+                settings_run_pending_actions();
+            }
             [self.tableView reloadData];
             [[NSNotificationCenter defaultCenter] postNotificationName:PackageQueueDidChangeNotification object:nil];
             return;

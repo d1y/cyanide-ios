@@ -7,6 +7,8 @@
 #import "PackageQueue.h"
 #import "../LogTextView.h"
 #import "../SettingsViewController.h"
+#import "../tweaks/RepoTweaks.h"
+#import "../tweaks/QuickLoader.h"
 
 
 typedef NS_ENUM(NSInteger, PackageDetailSection) {
@@ -173,6 +175,16 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
 - (BOOL)hasSettingsBundle
 {
     return self.package.settingsSection != NSIntegerMax;
+}
+
+- (BOOL)repoTweakHasParams
+{
+    if (self.package.kind != PackageInstallKindRepoTweak) return NO;
+    if (self.package.repoNativeEnabledKey.length > 0) return NO;
+    NSString *key = repotweaks_script_defaults_key(self.package.repoURL, self.package.repoTweakID);
+    NSString *script = [NSUserDefaults.standardUserDefaults stringForKey:key];
+    if (script.length == 0) return NO;
+    return [script containsString:@"@param:"];
 }
 
 - (BOOL)requiresThemeSelection
@@ -416,6 +428,10 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         [self promptSelectThemeBeforeInstall];
         return;
     }
+    if (!self.package.isInstalled && [self repoTweakHasParams]) {
+        [self promptConfigureRepoTweakBeforeInstall];
+        return;
+    }
     if (NO && !self.package.isInstalled && [self hasSettingsBundle]) {
         [self promptConfigureBeforeInstall];
         return;
@@ -457,22 +473,53 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         @"%@ has configurable options. Set them up first so the tweak applies with your preferences on the first run.",
         self.package.name];
     UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Customize Before Installing?"
-                                                                   message:msg
-                                                            preferredStyle:UIAlertControllerStyleAlert];
+                                                                    message:msg
+                                                             preferredStyle:UIAlertControllerStyleAlert];
     [alert addAction:[UIAlertAction actionWithTitle:@"Configure First"
-                                             style:UIAlertActionStyleDefault
-                                           handler:^(UIAlertAction *_) {
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *_) {
         [self navigateToSettingsSection];
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"Install Anyway"
-                                             style:UIAlertActionStyleDefault
-                                           handler:^(UIAlertAction *_) {
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *_) {
         log_user("[INSTALLER] Queued install: %s\n", self.package.name.UTF8String);
         [[PackageQueue sharedQueue] toggleForPackage:self.package];
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
-                                             style:UIAlertActionStyleCancel
-                                           handler:nil]];
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)promptConfigureRepoTweakBeforeInstall
+{
+    NSString *msg = [NSString stringWithFormat:
+        @"%@ has configurable options like colors, sliders, and toggles. Preview and edit them now — or go ahead with default values.",
+        self.package.name];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Customize Before Installing?"
+                                                                    message:msg
+                                                             preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Edit & Install"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *_) {
+        NSString *repoURL = self.package.repoURL;
+        NSString *tweakID = self.package.repoTweakID;
+        NSString *rawScript = [NSUserDefaults.standardUserDefaults stringForKey:repotweaks_script_defaults_key(repoURL, tweakID)];
+        NSDictionary *values = [NSUserDefaults.standardUserDefaults dictionaryForKey:repotweaks_values_defaults_key(repoURL, tweakID)] ?: @{};
+        if (quickloader_save_repo_tweak(repoURL, tweakID, self.package.name, rawScript, values)) {
+            [self navigateToQuickLoaderSection];
+        }
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Install with Defaults"
+                                              style:UIAlertActionStyleDefault
+                                            handler:^(UIAlertAction *_) {
+        log_user("[INSTALLER] Queued install: %s\n", self.package.name.UTF8String);
+        [[PackageQueue sharedQueue] toggleForPackage:self.package];
+    }]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                              style:UIAlertActionStyleCancel
+                                            handler:nil]];
     [self presentViewController:alert animated:YES completion:nil];
 }
 
@@ -730,6 +777,31 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
                                                                                    bundleTitle:self.package.name];
     bundle.installerReturnPackageName = self.package.name;
     [settingsNav pushViewController:bundle animated:NO];
+    tab.selectedIndex = settingsIndex;
+}
+
+- (void)navigateToQuickLoaderSection
+{
+    UITabBarController *tab = self.tabBarController;
+    NSUInteger settingsIndex = NSNotFound;
+    UINavigationController *settingsNav = nil;
+    for (NSUInteger i = 0; i < tab.viewControllers.count; i++) {
+        UIViewController *vc = tab.viewControllers[i];
+        if ([vc.tabBarItem.title isEqualToString:@"Settings"]) {
+            settingsIndex = i;
+            if ([vc isKindOfClass:UINavigationController.class]) {
+                settingsNav = (UINavigationController *)vc;
+            }
+            break;
+        }
+    }
+    if (settingsIndex == NSNotFound || !settingsNav) return;
+
+    [settingsNav popToRootViewControllerAnimated:NO];
+    SettingsViewController *ql = [[SettingsViewController alloc] initWithUnderlyingSection:22
+                                                                               bundleTitle:self.package.name];
+    ql.installerReturnPackageName = self.package.name;
+    [settingsNav pushViewController:ql animated:NO];
     tab.selectedIndex = settingsIndex;
 }
 
