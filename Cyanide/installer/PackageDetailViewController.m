@@ -9,6 +9,7 @@
 #import "../SettingsViewController.h"
 #import "../tweaks/RepoTweaks.h"
 #import "../tweaks/QuickLoader.h"
+#import "../tweaks/QuickLoaderConfigViewController.h"
 
 
 typedef NS_ENUM(NSInteger, PackageDetailSection) {
@@ -506,10 +507,20 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
         NSString *repoURL = self.package.repoURL;
         NSString *tweakID = self.package.repoTweakID;
         NSString *rawScript = [NSUserDefaults.standardUserDefaults stringForKey:repotweaks_script_defaults_key(repoURL, tweakID)];
-        NSDictionary *values = [NSUserDefaults.standardUserDefaults dictionaryForKey:repotweaks_values_defaults_key(repoURL, tweakID)] ?: @{};
-        if (quickloader_save_repo_tweak(repoURL, tweakID, self.package.name, rawScript, values)) {
-            [self navigateToQuickLoaderSection];
+        NSMutableDictionary *values = [NSMutableDictionary dictionaryWithDictionary:
+            [NSUserDefaults.standardUserDefaults dictionaryForKey:repotweaks_values_defaults_key(repoURL, tweakID)] ?: @{}];
+        QuickLoaderConfigViewController *configVC = [[QuickLoaderConfigViewController alloc]
+            initWithRawScript:rawScript
+            displayName:self.package.name
+            values:values
+            repoURL:repoURL
+            tweakID:tweakID];
+        UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:configVC];
+        nav.modalPresentationStyle = UIModalPresentationPageSheet;
+        if (nav.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPad) {
+            nav.modalPresentationStyle = UIModalPresentationFormSheet;
         }
+        [self presentViewController:nav animated:YES completion:nil];
     }]];
     [alert addAction:[UIAlertAction actionWithTitle:@"Install with Defaults"
                                               style:UIAlertActionStyleDefault
@@ -777,31 +788,6 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
                                                                                    bundleTitle:self.package.name];
     bundle.installerReturnPackageName = self.package.name;
     [settingsNav pushViewController:bundle animated:NO];
-    tab.selectedIndex = settingsIndex;
-}
-
-- (void)navigateToQuickLoaderSection
-{
-    UITabBarController *tab = self.tabBarController;
-    NSUInteger settingsIndex = NSNotFound;
-    UINavigationController *settingsNav = nil;
-    for (NSUInteger i = 0; i < tab.viewControllers.count; i++) {
-        UIViewController *vc = tab.viewControllers[i];
-        if ([vc.tabBarItem.title isEqualToString:@"Settings"]) {
-            settingsIndex = i;
-            if ([vc isKindOfClass:UINavigationController.class]) {
-                settingsNav = (UINavigationController *)vc;
-            }
-            break;
-        }
-    }
-    if (settingsIndex == NSNotFound || !settingsNav) return;
-
-    [settingsNav popToRootViewControllerAnimated:NO];
-    SettingsViewController *ql = [[SettingsViewController alloc] initWithUnderlyingSection:22
-                                                                               bundleTitle:self.package.name];
-    ql.installerReturnPackageName = self.package.name;
-    [settingsNav pushViewController:ql animated:NO];
     tab.selectedIndex = settingsIndex;
 }
 
