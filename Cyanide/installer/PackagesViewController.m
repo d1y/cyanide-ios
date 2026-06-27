@@ -41,8 +41,8 @@ static const BOOL kShowInstallerTipsHeader = NO;
 - (void)viewDidLoad
 {
     [super viewDidLoad];
-    self.title = @"Installer";
-    self.navigationItem.title = @"Installer";
+    self.title = @"Packages";
+    self.navigationItem.title = @"Packages";
 
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
     if (![ud objectForKey:kGroupByCategoryDefault]) {
