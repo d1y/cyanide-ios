@@ -9865,6 +9865,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     }
 
     if (self.qlParams.count > 0) {
+        [rows addObject:@{ @"kind": @"info", @"title": @"Parameters", @"subtitle": @"Changes take effect immediately." }];
         for (NSDictionary *param in self.qlParams) {
             NSMutableDictionary *rowDict = [NSMutableDictionary dictionaryWithDictionary:@{
                 @"kind": @"ql-param",
@@ -9881,31 +9882,87 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
 
     if (self.qlStandalone) {
         if (filename) {
-            [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-run-now",
-                               @"title": @"Run Tweak", @"style": @"prominent" }];
+            [rows addObject:@{ @"kind": @"ql-button", @"action": @"quickloader-run-now",
+                               @"title": @"Run Tweak" }];
         }
     } else {
         if (filename && !enabled) {
-            [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-apply-dynamic",
-                               @"title": @"Activate Tweak", @"style": @"prominent" }];
+            [rows addObject:@{ @"kind": @"ql-button", @"action": @"quickloader-apply-dynamic",
+                               @"title": @"Activate Tweak" }];
         } else if (filename && enabled && !applied) {
-            [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-apply-dynamic",
-                               @"title": @"Queued — Run Apply Tweaks" }];
+            [rows addObject:@{ @"kind": @"ql-button", @"action": @"quickloader-apply-dynamic",
+                               @"title": @"Re-run Tweak" }];
         } else if (filename && enabled) {
-            [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-apply-dynamic",
+            [rows addObject:@{ @"kind": @"ql-button", @"action": @"quickloader-apply-dynamic",
                                @"title": @"Re-run Tweak" }];
         }
     }
 
-    [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-run-js", @"title": @"Select .js File" }];
-    [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-open-sources", @"title": @"Browse Sources" }];
+    [rows addObject:@{ @"kind": @"ql-button", @"action": @"quickloader-run-js", @"title": @"Load .js File" }];
+    [rows addObject:@{ @"kind": @"ql-button", @"action": @"quickloader-open-sources", @"title": @"Browse Sources" }];
 
     if (filename) {
-        [rows addObject:@{ @"kind": @"button", @"action": @"quickloader-clear",
+        [rows addObject:@{ @"kind": @"ql-button", @"action": @"quickloader-clear",
                            @"title": @"Clear Loaded Tweak", @"destructive": @YES }];
     }
 
     return rows;
+}
+
+- (void)handleQuickLoaderButtonAction:(UIButton *)sender {
+    UIButtonConfiguration *cfg = sender.configuration;
+    NSString *title = cfg.title;
+    NSArray *rows = self.quickLoaderRows;
+    NSString *action = nil;
+    for (NSDictionary *row in rows) {
+        if ([row[@"title"] isEqualToString:title] && [row[@"kind"] isEqualToString:@"ql-button"]) {
+            action = row[@"action"];
+            break;
+        }
+    }
+    if (!action) return;
+
+    if ([action isEqualToString:@"quickloader-run-js"]) {
+        NSArray *types = @[UTTypeJavaScript.identifier, UTTypePlainText.identifier];
+        UIDocumentPickerViewController *dp = [[UIDocumentPickerViewController alloc] initWithDocumentTypes:types inMode:UIDocumentPickerModeImport];
+        dp.delegate = self;
+        [self presentViewController:dp animated:YES completion:nil];
+    } else if ([action isEqualToString:@"quickloader-open-sources"]) {
+        [self selectBottomTabNamed:@"Sources"];
+    } else if ([action isEqualToString:@"quickloader-clear"]) {
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        [d removeObjectForKey:@"QuickLoaderSourceScriptName"];
+        [d removeObjectForKey:@"QuickLoaderSourceRawJS"];
+        [d removeObjectForKey:@"QuickLoaderSourceValues"];
+        [d removeObjectForKey:@"QuickLoaderSourceRepoURL"];
+        [d removeObjectForKey:@"QuickLoaderSourceTweakID"];
+        [d removeObjectForKey:@"QuickLoaderSavedJS"];
+        [d setBool:NO forKey:kSettingsQuickLoaderEnabled];
+        [d synchronize];
+        self.qlScriptName = nil;
+        self.qlRawScript = nil;
+        self.qlParams = nil;
+        self.qlValues = nil;
+        [self.tableView reloadData];
+        [[NSNotificationCenter defaultCenter] postNotificationName:PackageQueueDidChangeNotification object:nil];
+    } else if ([action isEqualToString:@"quickloader-run-now"]) {
+        [self applyQuickLoaderScript];
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        [d setBool:YES forKey:kSettingsQuickLoaderEnabled];
+        settings_mark_tweak_needs_apply(kSettingsQuickLoaderEnabled);
+        [d synchronize];
+        settings_run_pending_actions();
+        [self.tableView reloadData];
+    } else if ([action isEqualToString:@"quickloader-apply-dynamic"]) {
+        [self applyQuickLoaderScript];
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        [d setBool:YES forKey:kSettingsQuickLoaderEnabled];
+        settings_mark_tweak_needs_apply(kSettingsQuickLoaderEnabled);
+        [d synchronize];
+        settings_run_pending_actions();
+        [self.tableView reloadData];
+        [[NSNotificationCenter defaultCenter] postNotificationName:PackageQueueDidChangeNotification object:nil];
+    }
 }
 
 - (void)applyQuickLoaderScript {
@@ -14713,16 +14770,150 @@ void cyanide_present_contact(UIViewController *host)
     }
 
     if ([kind isEqualToString:@"ql-param"]) {
+        NSString *varName = row[@"varName"];
+        NSString *pType = row[@"paramType"];
+        NSString *currentValue = settings_string_or_empty(self.qlValues[varName]);
+        NSString *defValue = row[@"default"] ?: @"";
+
+        NSString *iconName;
+        UIColor *iconColor;
+        if ([pType isEqualToString:@"switch"])      { iconName = @"togglepower"; iconColor = UIColor.systemGreenColor; }
+        else if ([pType isEqualToString:@"color"])  { iconName = @"paintpalette.fill"; iconColor = UIColor.systemPurpleColor; }
+        else if ([pType isEqualToString:@"slider"]) { iconName = @"slider.horizontal.3"; iconColor = UIColor.systemOrangeColor; }
+        else if ([pType isEqualToString:@"number"]) { iconName = @"number"; iconColor = UIColor.systemBlueColor; }
+        else                                         { iconName = @"textformat"; iconColor = UIColor.systemGrayColor; }
+
+        BOOL isDefault = [currentValue isEqualToString:defValue];
+
+        if ([pType isEqualToString:@"color"]) {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ql-color"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"ql-color"];
+            }
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.accessoryView = nil;
+
+            UIListContentConfiguration *config = [UIListContentConfiguration subtitleCellConfiguration];
+            UIColor *previewColor = colorFromHexString(currentValue ?: @"#FF0000");
+            config.image = CYIconBadgeImage(@"circle.fill", previewColor, 32.0);
+            config.imageProperties.reservedLayoutSize = CGSizeMake(32.0, 32.0);
+            config.imageProperties.maximumSize = CGSizeMake(32.0, 32.0);
+            config.imageToTextPadding = 14.0;
+            config.text = row[@"title"];
+            config.textProperties.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightMedium];
+            config.secondaryText = isDefault
+                ? [NSString stringWithFormat:@"%@ (default)", currentValue]
+                : currentValue;
+            config.secondaryTextProperties.color = isDefault ? UIColor.tertiaryLabelColor : UIColor.secondaryLabelColor;
+            config.textToSecondaryTextVerticalPadding = 2.0;
+            config.directionalLayoutMargins = (NSDirectionalEdgeInsets){12, 0, 12, 0};
+            cell.contentConfiguration = config;
+
+            UIColorWell *colorWell = [[UIColorWell alloc] init];
+            colorWell.translatesAutoresizingMaskIntoConstraints = NO;
+            colorWell.title = row[@"title"];
+            colorWell.selectedColor = previewColor;
+
+            UIAction *action = [UIAction actionWithHandler:^(__kindof UIAction * _Nonnull action) {
+                self.qlValues[varName] = hexStringFromColor(colorWell.selectedColor);
+                [[NSUserDefaults standardUserDefaults] setObject:self.qlValues forKey:@"QuickLoaderSourceValues"];
+                [self applyQuickLoaderScript];
+            }];
+            [colorWell addAction:action forControlEvents:UIControlEventValueChanged];
+
+            [cell.contentView addSubview:colorWell];
+            [NSLayoutConstraint activateConstraints:@[
+                [colorWell.trailingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.trailingAnchor],
+                [colorWell.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
+                [colorWell.widthAnchor constraintEqualToConstant:32.0],
+                [colorWell.heightAnchor constraintEqualToConstant:32.0]
+            ]];
+            return cell;
+        }
+
+        if ([pType isEqualToString:@"slider"]) {
+            UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ql-slider"];
+            if (!cell) {
+                cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"ql-slider"];
+            }
+            cell.selectionStyle = UITableViewCellSelectionStyleNone;
+            cell.accessoryView = nil;
+
+            UIListContentConfiguration *config = [UIListContentConfiguration subtitleCellConfiguration];
+            config.image = CYIconBadgeImage(iconName, iconColor, 32.0);
+            config.imageProperties.reservedLayoutSize = CGSizeMake(32.0, 32.0);
+            config.imageProperties.maximumSize = CGSizeMake(32.0, 32.0);
+            config.imageToTextPadding = 14.0;
+            config.text = row[@"title"];
+            config.textProperties.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightMedium];
+            config.directionalLayoutMargins = (NSDirectionalEdgeInsets){8, 0, 4, 0};
+            cell.contentConfiguration = config;
+
+            UISlider *slider = [[UISlider alloc] init];
+            slider.translatesAutoresizingMaskIntoConstraints = NO;
+            slider.minimumValue = row[@"min"] ? [row[@"min"] floatValue] : 0.0;
+            slider.maximumValue = row[@"max"] ? [row[@"max"] floatValue] : 1.0;
+            float defVal = row[@"default"] ? [row[@"default"] floatValue] : slider.minimumValue;
+            slider.value = currentValue ? [currentValue floatValue] : defVal;
+
+            UILabel *valLabel = [[UILabel alloc] init];
+            valLabel.translatesAutoresizingMaskIntoConstraints = NO;
+            valLabel.textColor = UIColor.secondaryLabelColor;
+            valLabel.font = [UIFont systemFontOfSize:14.0 weight:UIFontWeightMedium];
+            valLabel.textAlignment = NSTextAlignmentCenter;
+            valLabel.text = isDefault
+                ? [NSString stringWithFormat:@"%.2f (def)", slider.value]
+                : [NSString stringWithFormat:@"%.2f", slider.value];
+            [valLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+            [cell.contentView addSubview:slider];
+            [cell.contentView addSubview:valLabel];
+
+            UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
+            [NSLayoutConstraint activateConstraints:@[
+                [slider.leadingAnchor constraintEqualToAnchor:m.leadingAnchor constant:46.0],
+                [slider.trailingAnchor constraintEqualToAnchor:valLabel.leadingAnchor constant:-8.0],
+                [slider.topAnchor constraintEqualToAnchor:m.topAnchor constant:6.0],
+                [slider.bottomAnchor constraintEqualToAnchor:m.bottomAnchor constant:-6.0],
+                [valLabel.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+                [valLabel.centerYAnchor constraintEqualToAnchor:slider.centerYAnchor],
+                [valLabel.widthAnchor constraintEqualToConstant:72.0],
+                [slider.heightAnchor constraintEqualToConstant:31.0],
+            ]];
+
+            UIAction *updateAction = [UIAction actionWithHandler:^(__kindof UIAction * _Nonnull action) {
+                float diff = fabs(slider.value - defVal);
+                valLabel.text = diff < 0.01
+                    ? [NSString stringWithFormat:@"%.2f (def)", slider.value]
+                    : [NSString stringWithFormat:@"%.2f", slider.value];
+            }];
+            [slider addAction:updateAction forControlEvents:UIControlEventValueChanged];
+
+            UIAction *saveAction = [UIAction actionWithHandler:^(__kindof UIAction * _Nonnull action) {
+                self.qlValues[varName] = [NSString stringWithFormat:@"%.2f", slider.value];
+                [[NSUserDefaults standardUserDefaults] setObject:self.qlValues forKey:@"QuickLoaderSourceValues"];
+                [self applyQuickLoaderScript];
+            }];
+            [slider addAction:saveAction forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
+
+            return cell;
+        }
+
         UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ql-param"];
         if (!cell) {
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"ql-param"];
         }
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
-        cell.textLabel.text = row[@"title"];
 
-        NSString *varName = row[@"varName"];
-        NSString *pType = row[@"paramType"];
-        NSString *currentValue = settings_string_or_empty(self.qlValues[varName]);
+        UIListContentConfiguration *config = [UIListContentConfiguration valueCellConfiguration];
+        config.image = CYIconBadgeImage(iconName, iconColor, 32.0);
+        config.imageProperties.reservedLayoutSize = CGSizeMake(32.0, 32.0);
+        config.imageProperties.maximumSize = CGSizeMake(32.0, 32.0);
+        config.imageToTextPadding = 14.0;
+        config.text = row[@"title"];
+        config.textProperties.font = [UIFont systemFontOfSize:16.0 weight:UIFontWeightMedium];
+        config.directionalLayoutMargins = (NSDirectionalEdgeInsets){12, 0, 12, 0};
+        cell.contentConfiguration = config;
 
         if ([pType isEqualToString:@"switch"]) {
             UISwitch *sw = [[UISwitch alloc] init];
@@ -14734,13 +14925,15 @@ void cyanide_present_contact(UIViewController *host)
                 [self applyQuickLoaderScript];
             }];
             [sw addAction:action forControlEvents:UIControlEventValueChanged];
-
             cell.accessoryView = sw;
         }
         else if ([pType isEqualToString:@"text"]) {
-            UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 150, 30)];
+            UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 160, 34)];
             tf.textAlignment = NSTextAlignmentRight;
-            tf.textColor = UIColor.secondaryLabelColor;
+            tf.textColor = UIColor.labelColor;
+            tf.font = [UIFont systemFontOfSize:15.0];
+            tf.borderStyle = UITextBorderStyleRoundedRect;
+            tf.placeholder = defValue;
             tf.text = currentValue;
 
             UIAction *action = [UIAction actionWithHandler:^(__kindof UIAction * _Nonnull action) {
@@ -14748,79 +14941,26 @@ void cyanide_present_contact(UIViewController *host)
                 [[NSUserDefaults standardUserDefaults] setObject:self.qlValues forKey:@"QuickLoaderSourceValues"];
                 [self applyQuickLoaderScript];
             }];
-            [tf addAction:action forControlEvents:UIControlEventEditingChanged];
-
+            [tf addAction:action forControlEvents:UIControlEventEditingDidEnd];
             cell.accessoryView = tf;
         }
-        else if ([pType isEqualToString:@"color"]) {
-            cell.accessoryView = nil;
-
-            UIColorWell *colorWell = [[UIColorWell alloc] init];
-            colorWell.translatesAutoresizingMaskIntoConstraints = NO;
-            colorWell.title = row[@"title"];
-
-            colorWell.selectedColor = colorFromHexString(currentValue ?: @"#FF0000");
+        else if ([pType isEqualToString:@"number"]) {
+            UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(0, 0, 100, 34)];
+            tf.textAlignment = NSTextAlignmentRight;
+            tf.textColor = UIColor.labelColor;
+            tf.font = [UIFont systemFontOfSize:15.0];
+            tf.borderStyle = UITextBorderStyleRoundedRect;
+            tf.keyboardType = UIKeyboardTypeDecimalPad;
+            tf.placeholder = defValue;
+            tf.text = currentValue;
 
             UIAction *action = [UIAction actionWithHandler:^(__kindof UIAction * _Nonnull action) {
-                self.qlValues[varName] = hexStringFromColor(colorWell.selectedColor);
+                self.qlValues[varName] = tf.text;
                 [[NSUserDefaults standardUserDefaults] setObject:self.qlValues forKey:@"QuickLoaderSourceValues"];
                 [self applyQuickLoaderScript];
             }];
-            [colorWell addAction:action forControlEvents:UIControlEventValueChanged];
-
-            [cell.contentView addSubview:colorWell];
-
-            [NSLayoutConstraint activateConstraints:@[
-                [colorWell.trailingAnchor constraintEqualToAnchor:cell.contentView.layoutMarginsGuide.trailingAnchor],
-                [colorWell.centerYAnchor constraintEqualToAnchor:cell.contentView.centerYAnchor],
-                [colorWell.widthAnchor constraintEqualToConstant:32.0],
-                [colorWell.heightAnchor constraintEqualToConstant:32.0]
-            ]];
-        }
-
-        else if ([pType isEqualToString:@"slider"]) {
-            UIStackView *stack = [[UIStackView alloc] initWithFrame:CGRectMake(0, 0, 220, 30)];
-            stack.axis = UILayoutConstraintAxisHorizontal;
-            stack.spacing = 10;
-            stack.alignment = UIStackViewAlignmentCenter;
-
-            UISlider *slider = [[UISlider alloc] init];
-            slider.minimumValue = row[@"min"] ? [row[@"min"] floatValue] : 0.0;
-            slider.maximumValue = row[@"max"] ? [row[@"max"] floatValue] : 1.0;
-
-            float defVal = row[@"default"] ? [row[@"default"] floatValue] : slider.minimumValue;
-            slider.value = currentValue ? [currentValue floatValue] : defVal;
-
-            UILabel *valLabel = [[UILabel alloc] init];
-            valLabel.textColor = [UIColor secondaryLabelColor];
-            valLabel.font = [UIFont systemFontOfSize:14];
-            [valLabel setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
-
-            void (^updateLabelText)(float) = ^(float value) {
-                if (fabs(value - defVal) < 0.01) {
-                    valLabel.text = [NSString stringWithFormat:@"%.2f (Def)", value];
-                } else {
-                    valLabel.text = [NSString stringWithFormat:@"%.2f", value];
-                }
-            };
-
-            updateLabelText(slider.value);
-            [stack addArrangedSubview:slider];
-            [stack addArrangedSubview:valLabel];
-
-            UIAction *updateTextAction = [UIAction actionWithHandler:^(__kindof UIAction * _Nonnull action) {
-                updateLabelText(slider.value);
-            }];
-            [slider addAction:updateTextAction forControlEvents:UIControlEventValueChanged];
-
-            UIAction *saveAction = [UIAction actionWithHandler:^(__kindof UIAction * _Nonnull action) {
-                self.qlValues[varName] = [NSString stringWithFormat:@"%.2f", slider.value];
-                [[NSUserDefaults standardUserDefaults] setObject:self.qlValues forKey:@"QuickLoaderSourceValues"];
-                [self applyQuickLoaderScript];
-            }];
-            [slider addAction:saveAction forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside];
-
-            cell.accessoryView = stack;
+            [tf addAction:action forControlEvents:UIControlEventEditingDidEnd];
+            cell.accessoryView = tf;
         }
 
         return cell;
@@ -14857,6 +14997,42 @@ void cyanide_present_contact(UIViewController *host)
         return [self buildLayoutCalibrationCellInTableView:tableView
                                                        row:row
                                                  indexPath:dequeuePath];
+    }
+
+    if ([kind isEqualToString:@"ql-button"]) {
+        UITableViewCell *cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:@"ql-button"];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.backgroundColor = UIColor.clearColor;
+        cell.contentView.backgroundColor = UIColor.clearColor;
+        cell.separatorInset = UIEdgeInsetsMake(0, CGRectGetWidth(tableView.bounds), 0, 0);
+
+        NSString *action = row[@"action"];
+        BOOL destructive = [row[@"destructive"] boolValue];
+        NSString *title = row[@"title"];
+
+        UIButtonConfiguration *btnConfig = [UIButtonConfiguration filledButtonConfiguration];
+        btnConfig.title = title;
+        btnConfig.buttonSize = UIButtonConfigurationSizeLarge;
+        btnConfig.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
+        btnConfig.baseForegroundColor = UIColor.whiteColor;
+        btnConfig.baseBackgroundColor = destructive ? UIColor.systemRedColor : self.view.tintColor;
+        btnConfig.contentInsets = NSDirectionalEdgeInsetsMake(14, 24, 14, 24);
+
+        UIButton *button = [UIButton buttonWithConfiguration:btnConfig primaryAction:nil];
+        button.translatesAutoresizingMaskIntoConstraints = NO;
+        [button addTarget:self action:@selector(handleQuickLoaderButtonAction:) forControlEvents:UIControlEventTouchUpInside];
+
+        [cell.contentView addSubview:button];
+
+        UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
+        [NSLayoutConstraint activateConstraints:@[
+            [button.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
+            [button.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
+            [button.topAnchor constraintEqualToAnchor:m.topAnchor constant:4.0],
+            [button.bottomAnchor constraintEqualToAnchor:m.bottomAnchor constant:-4.0],
+            [button.heightAnchor constraintEqualToConstant:52.0],
+        ]];
+        return cell;
     }
 
     if ([kind isEqualToString:@"button"]) {
