@@ -112,6 +112,8 @@ static const NSInteger kSecNiceBarLite      = 7;
 static const NSInteger kSecRSSI             = 8;
 static const NSInteger kSecTypeBanner       = 10;
 static const NSInteger kSecPowercuff        = 11;
+static const NSInteger kSecAxonLite         = 9;
+static const NSInteger kSecDarkSwordTweaks  = 12;
 static const NSInteger kSecLocationSim      = 19;
 static const NSInteger kSecDragCoefficient  = 20;
 static const NSInteger kSecLayoutExtras     = 13;
@@ -237,6 +239,7 @@ static const NSInteger kSecRepoTweaks       = 23;
                                            kind:PackageInstallKindToggle
                                      enabledKey:kSettingsAxonLiteEnabled
                                           isNew:YES];
+        axon.settingsSection = kSecAxonLite;
         axon.unstableWarning = @"⚠️ Experimental: work-in-progress. Expect SpringBoard crashes, dropped notifications, layout glitches, and breakage between Cyanide builds. Don't rely on it for anything important.";
 
         Package *typeBanner = [[Package alloc] initWithIdentifier:@"com.darksword.typebanner"
@@ -250,6 +253,7 @@ static const NSInteger kSecRepoTweaks       = 23;
                                            kind:PackageInstallKindToggle
                                      enabledKey:kSettingsTypeBannerEnabled
                                           isNew:YES];
+        typeBanner.settingsSection = kSecTypeBanner;
         typeBanner.experimental = YES;
         typeBanner.unstableWarning = @"⚠️ Experimental: extremely unstable and risky. Polls MobileSMS over RemoteCall every ~1.5s, opens SpringBoard sessions on state change, and is known to crash SpringBoard. Detection only fires while Messages.app is running. Battery cost is non-trivial.";
 
@@ -410,8 +414,9 @@ static const NSInteger kSecRepoTweaks       = 23;
                                        category:@"SpringBoard"
                                      symbolName:@"square.grid.2x2.fill"
                                            kind:PackageInstallKindToggle
-                                     enabledKey:kSettingsDSDisableAppLibrary
-                                          isNew:NO];
+                                      enabledKey:kSettingsDSDisableAppLibrary
+                                           isNew:NO];
+        disableAppLibrary.settingsSection = kSecDarkSwordTweaks;
 
         Package *quickLoader = [[Package alloc] initWithIdentifier:@"com.darksword.quickloader"
                                            name:@"QuickLoader"
@@ -453,53 +458,69 @@ static const NSInteger kSecRepoTweaks       = 23;
 
             disableAppLibrary,
 
-            [[Package alloc] initWithIdentifier:@"com.darksword.disable-icon-flyin"
-                                           name:@"Disable Icon Fly-In"
-                               shortDescription:@"Skip the icon spring animation"
-                                longDescription:@"Skips the spring animation that plays when home screen icons appear after unlock or app switch. Icons just appear in their final position."
-                                        version:version
-                                         author:@"kolbicz"
-                                       category:@"SpringBoard"
-                                     symbolName:@"sparkles"
-                                           kind:PackageInstallKindToggle
-                                     enabledKey:kSettingsDSDisableIconFlyIn
-                                          isNew:NO],
+            ({
+                Package *p = [[Package alloc] initWithIdentifier:@"com.darksword.disable-icon-flyin"
+                                                           name:@"Disable Icon Fly-In"
+                                               shortDescription:@"Skip the icon spring animation"
+                                                longDescription:@"Skips the spring animation that plays when home screen icons appear after unlock or app switch. Icons just appear in their final position."
+                                                        version:version
+                                                         author:@"kolbicz"
+                                                       category:@"SpringBoard"
+                                                     symbolName:@"sparkles"
+                                                           kind:PackageInstallKindToggle
+                                                     enabledKey:kSettingsDSDisableIconFlyIn
+                                                          isNew:NO];
+                p.settingsSection = kSecDarkSwordTweaks;
+                p;
+            }),
 
-            [[Package alloc] initWithIdentifier:@"com.darksword.zero-wake-animation"
-                                           name:@"Zero Wake Animation"
-                               shortDescription:@"Snap on instantly when waking"
-                                longDescription:@"Removes the fade-in animation when waking the display. The screen pops on at full brightness immediately."
-                                        version:version
-                                         author:@"kolbicz"
-                                       category:@"SpringBoard"
-                                     symbolName:@"moon.zzz.fill"
-                                           kind:PackageInstallKindToggle
-                                     enabledKey:kSettingsDSZeroWakeAnimation
-                                          isNew:NO],
+            ({
+                Package *p = [[Package alloc] initWithIdentifier:@"com.darksword.zero-wake-animation"
+                                                           name:@"Zero Wake Animation"
+                                               shortDescription:@"Snap on instantly when waking"
+                                                longDescription:@"Removes the fade-in animation when waking the display. The screen pops on at full brightness immediately."
+                                                        version:version
+                                                         author:@"kolbicz"
+                                                       category:@"SpringBoard"
+                                                     symbolName:@"moon.zzz.fill"
+                                                           kind:PackageInstallKindToggle
+                                                     enabledKey:kSettingsDSZeroWakeAnimation
+                                                          isNew:NO];
+                p.settingsSection = kSecDarkSwordTweaks;
+                p;
+            }),
 
-            [[Package alloc] initWithIdentifier:@"com.darksword.zero-backlight-fade"
-                                           name:@"Zero Backlight Fade"
-                               shortDescription:@"Instant lock/unlock backlight"
-                                longDescription:@"Cuts the backlight fade duration to zero so the display switches on or off instantly on lock and unlock."
-                                        version:version
-                                         author:@"kolbicz"
-                                       category:@"SpringBoard"
-                                     symbolName:@"sun.max.fill"
-                                           kind:PackageInstallKindToggle
-                                     enabledKey:kSettingsDSZeroBacklightFade
-                                          isNew:NO],
+            ({
+                Package *p = [[Package alloc] initWithIdentifier:@"com.darksword.zero-backlight-fade"
+                                                           name:@"Zero Backlight Fade"
+                                               shortDescription:@"Instant lock/unlock backlight"
+                                                longDescription:@"Cuts the backlight fade duration to zero so the display switches on or off instantly on lock and unlock."
+                                                        version:version
+                                                         author:@"kolbicz"
+                                                       category:@"SpringBoard"
+                                                     symbolName:@"sun.max.fill"
+                                                           kind:PackageInstallKindToggle
+                                                     enabledKey:kSettingsDSZeroBacklightFade
+                                                          isNew:NO];
+                p.settingsSection = kSecDarkSwordTweaks;
+                p;
+            }),
 
-            [[Package alloc] initWithIdentifier:@"com.darksword.double-tap-to-lock"
-                                           name:@"Double-Tap to Lock"
-                               shortDescription:@"Lock with a wallpaper double-tap"
-                                longDescription:@"Double-tap an empty area of the wallpaper to lock the device. No more reaching for the side button."
-                                        version:version
-                                         author:@"kolbicz"
-                                       category:@"SpringBoard"
-                                     symbolName:@"hand.tap.fill"
-                                           kind:PackageInstallKindToggle
-                                     enabledKey:kSettingsDSDoubleTapToLock
-                                          isNew:NO],
+            ({
+                Package *p = [[Package alloc] initWithIdentifier:@"com.darksword.double-tap-to-lock"
+                                                           name:@"Double-Tap to Lock"
+                                               shortDescription:@"Lock with a wallpaper double-tap"
+                                                longDescription:@"Double-tap an empty area of the wallpaper to lock the device. No more reaching for the side button."
+                                                        version:version
+                                                         author:@"kolbicz"
+                                                       category:@"SpringBoard"
+                                                     symbolName:@"hand.tap.fill"
+                                                           kind:PackageInstallKindToggle
+                                                     enabledKey:kSettingsDSDoubleTapToLock
+                                                          isNew:NO];
+                p.settingsSection = kSecDarkSwordTweaks;
+                p;
+            }),
 
             ({
                 Package *drag = [[Package alloc] initWithIdentifier:@"com.darksword.drag-coefficient"
