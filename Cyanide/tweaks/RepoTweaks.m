@@ -134,7 +134,8 @@ static NSString *repo_uint64_to_js(uint64_t val) {
 static BOOL repotweaks_is_https_url(NSString *urlString) {
     if (![urlString isKindOfClass:NSString.class] || urlString.length == 0) return NO;
     NSURLComponents *components = [NSURLComponents componentsWithString:urlString];
-    return [components.scheme.lowercaseString isEqualToString:@"https"] && components.host.length > 0;
+    NSString *scheme = components.scheme.lowercaseString;
+    return ([scheme isEqualToString:@"https"] || [scheme isEqualToString:@"http"]) && components.host.length > 0;
 }
 
 static NSString *repotweaks_absolute_url(NSString *baseURL, NSString *relativeOrAbsoluteURL) {
