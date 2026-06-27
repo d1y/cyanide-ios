@@ -211,11 +211,29 @@ typedef NS_ENUM(NSInteger, QueueReviewSection) {
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath
 {
+    NSArray *sectionPackages = [self packagesForSection:indexPath.section];
+    
+    // ==================== prevent out-of-bounds ====================
+    if (indexPath.row >= sectionPackages.count || sectionPackages.count == 0) {
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"QueueRow"];
+        if (!cell) {
+            cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle 
+                                          reuseIdentifier:@"QueueRow"];
+        }
+        cell.textLabel.text = @"（unknown）";
+        cell.detailTextLabel.text = nil;
+        cell.imageView.image = nil;
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        return cell;
+    }
+    // ================================================
+    
+    Package *pkg = sectionPackages[indexPath.row];
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"QueueRow"];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:@"QueueRow"];
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle 
+                                      reuseIdentifier:@"QueueRow"];
     }
-    Package *pkg = [self packagesForSection:indexPath.section][indexPath.row];
     cell.textLabel.text = pkg.name;
     cell.textLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
 
