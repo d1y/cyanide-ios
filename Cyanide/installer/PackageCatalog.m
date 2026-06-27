@@ -112,16 +112,17 @@ static const NSInteger kSecNiceBarLite      = 7;
 static const NSInteger kSecRSSI             = 8;
 static const NSInteger kSecTypeBanner       = 10;
 static const NSInteger kSecPowercuff        = 11;
-static const NSInteger kSecDragCoefficient  = 19;
+static const NSInteger kSecLocationSim      = 19;
+static const NSInteger kSecDragCoefficient  = 20;
 static const NSInteger kSecLayoutExtras     = 13;
 static const NSInteger kSecNanoRegistry     = 14;
 static const NSInteger kSecSnowBoardLite    = 16;
 static const NSInteger kSecLiveWP           = 17;
 static const NSInteger kSecGravityLite      = 18;
-static const NSInteger kSecAppSwitcherGrid  = 20;
+static const NSInteger kSecAppSwitcherGrid  = 21;
 static const NSInteger kSecThemer           = 15;
-static const NSInteger kSecQuickLoader      = 21;
-static const NSInteger kSecRepoTweaks       = 22;
+static const NSInteger kSecQuickLoader      = 22;
+static const NSInteger kSecRepoTweaks       = 23;
 
 + (NSArray<Package *> *)allPackages
 {
@@ -437,7 +438,7 @@ static const NSInteger kSecRepoTweaks       = 22;
                                            kind:PackageInstallKindDirectTool
                                      enabledKey:nil
                                           isNew:NO];
-        locationSim.settingsSection = NSIntegerMax;
+        locationSim.settingsSection = kSecLocationSim;
         locationSim.experimental = NO;
         locationSim.unstableWarning = @"Beta: requires Apple Maps installed and set up. Changes CoreLocation's active simulation state — may affect time zone, date/time, and other location-tied behavior. Some apps and services prohibit or detect simulated locations. Only use this if you know what you're doing.";
 

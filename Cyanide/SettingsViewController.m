@@ -29,6 +29,7 @@
 #import "tweaks/RepoTweaks.h"
 #import "tweaks/hide_home_bar.h"
 #import "tweaks/call_recording_sound.h"
+#import "tweaks/location_sim.h"
 
 #import <objc/runtime.h>
 #import <CoreMotion/CoreMotion.h>
@@ -905,11 +906,13 @@ NSString * const kSettingsLiveWPVideoPath = @"LiveWPVideoPath";
 NSString * const kSettingsQuickLoaderEnabled = @"QuickLoaderEnabled";
 NSString * const kSettingsRepoTweaksEnabled = @"RepoTweaksEnabled";
 
+NSString * const kSettingsLocationSimEnabled = @"LocationSimEnabled";
 NSString * const kSettingsLocationSimLatitude = @"LocationSimLatitude";
 NSString * const kSettingsLocationSimLongitude = @"LocationSimLongitude";
 NSString * const kSettingsLocationSimAltitude = @"LocationSimAltitude";
 NSString * const kSettingsLocationSimHorizontalAccuracy = @"LocationSimHorizontalAccuracy";
 NSString * const kSettingsLocationSimHostProcess = @"LocationSimHostProcess";
+static NSString * const kSettingsLocationSimStarted = @"LocationSimStarted";
 
 NSString * const kSettingsLogUploadEnabled = @"LogUploadEnabled";
 
@@ -1167,6 +1170,10 @@ static const useconds_t kNiceBarLiteNetworkIntervalUS = 500000;
 static const NSUInteger kNiceBarLiteLiveMaxTicks = 43200;
 static const NSTimeInterval kNiceBarLiteWeatherRefreshInterval = 900.0;
 static const int64_t kLiveBackgroundTaskGraceSeconds = 10;
+static const double kLocationSimDefaultLatitude = 40.55162017033417;
+static const double kLocationSimDefaultLongitude = -73.93282297058470;
+static const NSInteger kLocationSimDefaultAltitude = 0;
+static const NSInteger kLocationSimDefaultAccuracy = 5;
 static const useconds_t kRSSILiveIntervalUS = 250000;
 static const useconds_t kRSSILiveBackgroundIntervalUS = 1000000;
 static const NSUInteger kRSSILiveMaxTicks = 43200;
@@ -1287,6 +1294,7 @@ static NSArray<NSString *> *settings_rc_backed_tweak_keys(void)
             kSettingsLiveWPEnabled,
             kSettingsQuickLoaderEnabled,
             kSettingsRepoTweaksEnabled,
+            kSettingsLocationSimEnabled,
         ];
     });
     return keys;
@@ -5540,6 +5548,16 @@ static BOOL settings_key_is_gravitylite(NSString *key)
            [key isEqualToString:kSettingsGravityLiteAngularResistancePct];
 }
 
+static BOOL settings_key_is_location_sim(NSString *key)
+{
+    return [key isEqualToString:kSettingsLocationSimEnabled] ||
+           [key isEqualToString:kSettingsLocationSimLatitude] ||
+           [key isEqualToString:kSettingsLocationSimLongitude] ||
+           [key isEqualToString:kSettingsLocationSimAltitude] ||
+           [key isEqualToString:kSettingsLocationSimHorizontalAccuracy] ||
+           [key isEqualToString:kSettingsLocationSimHostProcess];
+}
+
 static BOOL settings_key_is_dark_tweak(NSString *key)
 {
     return [key isEqualToString:kSettingsDSDisableAppLibrary] ||
@@ -5567,8 +5585,406 @@ static BOOL settings_key_affects_package_state(NSString *key)
             [key isEqualToString:kSettingsLiveWPEnabled] ||
             [key isEqualToString:kSettingsQuickLoaderEnabled] ||
             [key isEqualToString:kSettingsRepoTweaksEnabled] ||
+            [key isEqualToString:kSettingsLocationSimEnabled] ||
             settings_key_is_gravitylite(key) ||
-            settings_key_is_dark_tweak(key);
+            settings_key_is_dark_tweak(key) ||
+            settings_key_is_location_sim(key);
+}
+
+static BOOL settings_location_sim_install_allowed(void)
+{
+    return YES;
+}
+
+static NSString *settings_location_sim_host_process(NSUserDefaults *d)
+{
+    NSString *host = [d stringForKey:kSettingsLocationSimHostProcess];
+    return host.length > 0 ? host : @"Maps";
+}
+
+static NSString *settings_location_sim_normalized_coordinate_text(NSString *text)
+{
+    if (![text isKindOfClass:NSString.class] || text.length == 0) return @"";
+
+    NSMutableString *normalized = [text mutableCopy];
+    CFStringTransform((__bridge CFMutableStringRef)normalized,
+                      NULL,
+                      kCFStringTransformFullwidthHalfwidth,
+                      false);
+    NSDictionary<NSString *, NSString *> *replacements = @{
+        @"−": @"-",
+        @"－": @"-",
+        @"﹣": @"-",
+        @"–": @"-",
+        @"—": @"-",
+        @"。": @".",
+        @"．": @".",
+        @"，": @",",
+        @"、": @",",
+        @"；": @";",
+        @"：": @":",
+        @"（": @"(",
+        @"）": @")",
+        @"緯": @"纬",
+        @"經": @"经",
+        @"東": @"东",
+    };
+    [replacements enumerateKeysAndObjectsUsingBlock:^(NSString *from, NSString *to, BOOL *stop) {
+        (void)stop;
+        [normalized replaceOccurrencesOfString:from
+                                    withString:to
+                                       options:0
+                                         range:NSMakeRange(0, normalized.length)];
+    }];
+    return normalized;
+}
+
+static NSArray<NSDictionary *> *settings_location_sim_number_tokens_from_text(NSString *text)
+{
+    NSMutableArray<NSDictionary *> *tokens = [NSMutableArray array];
+    NSScanner *scanner = [NSScanner scannerWithString:text ?: @""];
+    scanner.charactersToBeSkipped = nil;
+    while (!scanner.isAtEnd) {
+        double value = 0.0;
+        NSUInteger start = scanner.scanLocation;
+        if ([scanner scanDouble:&value]) {
+            if (isfinite(value)) {
+                NSRange range = NSMakeRange(start, scanner.scanLocation - start);
+                [tokens addObject:@{ @"value": @(value),
+                                     @"range": [NSValue valueWithRange:range] }];
+            }
+            continue;
+        }
+        scanner.scanLocation = scanner.scanLocation + 1;
+    }
+    return tokens;
+}
+
+static NSInteger settings_location_sim_axis_sign_for_word(NSString *word, BOOL latitude)
+{
+    NSString *upper = [(word ?: @"") uppercaseString];
+    if (latitude) {
+        if ([upper isEqualToString:@"N"] ||
+            [upper isEqualToString:@"NORTH"] ||
+            [upper containsString:@"北"]) return 1;
+        if ([upper isEqualToString:@"S"] ||
+            [upper isEqualToString:@"SOUTH"] ||
+            [upper containsString:@"南"]) return -1;
+    } else {
+        if ([upper isEqualToString:@"E"] ||
+            [upper isEqualToString:@"EAST"] ||
+            [upper containsString:@"东"]) return 1;
+        if ([upper isEqualToString:@"W"] ||
+            [upper isEqualToString:@"WEST"] ||
+            [upper containsString:@"西"]) return -1;
+    }
+    return 0;
+}
+
+static NSInteger settings_location_sim_axis_kind_for_word(NSString *word)
+{
+    NSString *upper = [(word ?: @"") uppercaseString];
+    if ([upper isEqualToString:@"LAT"] ||
+        [upper isEqualToString:@"LATITUDE"] ||
+        [upper containsString:@"纬"]) {
+        return 1;
+    }
+    if ([upper isEqualToString:@"LON"] ||
+        [upper isEqualToString:@"LNG"] ||
+        [upper isEqualToString:@"LONG"] ||
+        [upper isEqualToString:@"LONGITUDE"] ||
+        [upper containsString:@"经"]) {
+        return 2;
+    }
+    return 0;
+}
+
+static BOOL settings_location_sim_is_axis_separator(unichar c)
+{
+    if ([NSCharacterSet.whitespaceAndNewlineCharacterSet characterIsMember:c]) return YES;
+    if ([NSCharacterSet.punctuationCharacterSet characterIsMember:c]) return YES;
+    if ([NSCharacterSet.symbolCharacterSet characterIsMember:c]) return YES;
+    return NO;
+}
+
+static NSString *settings_location_sim_axis_word_after_range(NSString *text, NSRange range)
+{
+    NSUInteger i = NSMaxRange(range);
+    while (i < text.length &&
+           settings_location_sim_is_axis_separator([text characterAtIndex:i])) {
+        i++;
+    }
+    NSUInteger start = i;
+    while (i < text.length &&
+           [NSCharacterSet.letterCharacterSet characterIsMember:[text characterAtIndex:i]]) {
+        i++;
+    }
+    return i > start ? [text substringWithRange:NSMakeRange(start, i - start)] : @"";
+}
+
+static NSString *settings_location_sim_axis_word_before_range(NSString *text, NSRange range)
+{
+    if (range.location == 0) return @"";
+    NSInteger i = (NSInteger)range.location - 1;
+    while (i >= 0 &&
+           settings_location_sim_is_axis_separator([text characterAtIndex:(NSUInteger)i])) {
+        i--;
+    }
+    NSInteger end = i + 1;
+    while (i >= 0 &&
+           [NSCharacterSet.letterCharacterSet characterIsMember:[text characterAtIndex:(NSUInteger)i]]) {
+        i--;
+    }
+    NSInteger start = i + 1;
+    return end > start ? [text substringWithRange:NSMakeRange((NSUInteger)start, (NSUInteger)(end - start))] : @"";
+}
+
+static NSInteger settings_location_sim_axis_sign_near_range(NSString *text,
+                                                            NSRange range,
+                                                            BOOL latitude)
+{
+    NSInteger sign = settings_location_sim_axis_sign_for_word(settings_location_sim_axis_word_after_range(text ?: @"", range),
+                                                              latitude);
+    if (sign != 0) return sign;
+    return settings_location_sim_axis_sign_for_word(settings_location_sim_axis_word_before_range(text ?: @"", range),
+                                                   latitude);
+}
+
+static NSInteger settings_location_sim_axis_kind_near_range(NSString *text, NSRange range)
+{
+    NSInteger kind = settings_location_sim_axis_kind_for_word(settings_location_sim_axis_word_before_range(text ?: @"", range));
+    if (kind != 0) return kind;
+    return settings_location_sim_axis_kind_for_word(settings_location_sim_axis_word_after_range(text ?: @"", range));
+}
+
+static NSInteger settings_location_sim_axis_sign_from_text(NSString *text, BOOL latitude)
+{
+    NSString *upper = [(text ?: @"") uppercaseString];
+    NSInteger sign = 0;
+    for (NSUInteger i = 0; i < upper.length; i++) {
+        unichar c = [upper characterAtIndex:i];
+        NSInteger candidate = settings_location_sim_axis_sign_for_word([NSString stringWithCharacters:&c length:1],
+                                                                       latitude);
+        if (candidate == 0) continue;
+
+        BOOL prevIsLetter = (i > 0) && [NSCharacterSet.letterCharacterSet characterIsMember:[upper characterAtIndex:i - 1]];
+        BOOL nextIsLetter = (i + 1 < upper.length) && [NSCharacterSet.letterCharacterSet characterIsMember:[upper characterAtIndex:i + 1]];
+        if (!prevIsLetter && !nextIsLetter) sign = candidate;
+    }
+    return sign;
+}
+
+static double settings_location_sim_apply_axis_sign(double value, NSInteger sign)
+{
+    return sign != 0 ? fabs(value) * (double)sign : value;
+}
+
+static BOOL settings_location_sim_coordinates_valid(double latitude, double longitude)
+{
+    return isfinite(latitude) && isfinite(longitude) &&
+           latitude >= -90.0 && latitude <= 90.0 &&
+           longitude >= -180.0 && longitude <= 180.0;
+}
+
+static BOOL settings_location_sim_component_valid(double value, BOOL latitude)
+{
+    if (!isfinite(value)) return NO;
+    return latitude
+        ? (value >= -90.0 && value <= 90.0)
+        : (value >= -180.0 && value <= 180.0);
+}
+
+static BOOL settings_location_sim_parse_coordinate_component(NSString *text,
+                                                             BOOL latitude,
+                                                             double *outValue)
+{
+    if (!outValue) return NO;
+    NSString *normalizedText = settings_location_sim_normalized_coordinate_text(text);
+    NSArray<NSDictionary *> *tokens = settings_location_sim_number_tokens_from_text(normalizedText);
+    if (tokens.count != 1) return NO;
+
+    NSDictionary *token = tokens.firstObject;
+    double value = [token[@"value"] doubleValue];
+    NSRange range = [token[@"range"] rangeValue];
+    NSInteger sign = settings_location_sim_axis_sign_near_range(normalizedText, range, latitude);
+    if (sign == 0) sign = settings_location_sim_axis_sign_from_text(normalizedText, latitude);
+    value = settings_location_sim_apply_axis_sign(value, sign);
+    if (!settings_location_sim_component_valid(value, latitude)) return NO;
+
+    *outValue = value;
+    return YES;
+}
+
+static BOOL settings_location_sim_parse_coordinate_pair(NSString *text,
+                                                        double *latitudeOut,
+                                                        double *longitudeOut)
+{
+    if (!latitudeOut || !longitudeOut) return NO;
+    NSString *normalizedText = settings_location_sim_normalized_coordinate_text(text);
+    NSArray<NSDictionary *> *tokens = settings_location_sim_number_tokens_from_text(normalizedText);
+    if (tokens.count != 2) return NO;
+
+    NSDictionary *firstToken = tokens[0];
+    NSDictionary *secondToken = tokens[1];
+    double first = [firstToken[@"value"] doubleValue];
+    double second = [secondToken[@"value"] doubleValue];
+    NSRange firstRange = [firstToken[@"range"] rangeValue];
+    NSRange secondRange = [secondToken[@"range"] rangeValue];
+    NSInteger firstLatSign = settings_location_sim_axis_sign_near_range(normalizedText, firstRange, YES);
+    NSInteger firstLonSign = settings_location_sim_axis_sign_near_range(normalizedText, firstRange, NO);
+    NSInteger secondLatSign = settings_location_sim_axis_sign_near_range(normalizedText, secondRange, YES);
+    NSInteger secondLonSign = settings_location_sim_axis_sign_near_range(normalizedText, secondRange, NO);
+    NSInteger firstKind = settings_location_sim_axis_kind_near_range(normalizedText, firstRange);
+    NSInteger secondKind = settings_location_sim_axis_kind_near_range(normalizedText, secondRange);
+
+    if (firstKind == 1 && secondKind == 2) {
+        double latitude = settings_location_sim_apply_axis_sign(first, firstLatSign);
+        double longitude = settings_location_sim_apply_axis_sign(second, secondLonSign);
+        if (!settings_location_sim_coordinates_valid(latitude, longitude)) return NO;
+        *latitudeOut = latitude;
+        *longitudeOut = longitude;
+        return YES;
+    }
+
+    if (firstKind == 2 && secondKind == 1) {
+        double latitude = settings_location_sim_apply_axis_sign(second, secondLatSign);
+        double longitude = settings_location_sim_apply_axis_sign(first, firstLonSign);
+        if (!settings_location_sim_coordinates_valid(latitude, longitude)) return NO;
+        *latitudeOut = latitude;
+        *longitudeOut = longitude;
+        return YES;
+    }
+
+    if (firstLatSign != 0 && secondLonSign != 0) {
+        double latitude = settings_location_sim_apply_axis_sign(first, firstLatSign);
+        double longitude = settings_location_sim_apply_axis_sign(second, secondLonSign);
+        if (!settings_location_sim_coordinates_valid(latitude, longitude)) return NO;
+        *latitudeOut = latitude;
+        *longitudeOut = longitude;
+        return YES;
+    }
+
+    if (firstLonSign != 0 && secondLatSign != 0) {
+        double latitude = settings_location_sim_apply_axis_sign(second, secondLatSign);
+        double longitude = settings_location_sim_apply_axis_sign(first, firstLonSign);
+        if (!settings_location_sim_coordinates_valid(latitude, longitude)) return NO;
+        *latitudeOut = latitude;
+        *longitudeOut = longitude;
+        return YES;
+    }
+
+    NSInteger latitudeSign = settings_location_sim_axis_sign_from_text(normalizedText, YES);
+    NSInteger longitudeSign = settings_location_sim_axis_sign_from_text(normalizedText, NO);
+
+    double latitude = first;
+    double longitude = second;
+    latitude = settings_location_sim_apply_axis_sign(latitude, latitudeSign);
+    longitude = settings_location_sim_apply_axis_sign(longitude, longitudeSign);
+    if (!settings_location_sim_coordinates_valid(latitude, longitude)) {
+        latitude = second;
+        longitude = first;
+        latitude = settings_location_sim_apply_axis_sign(latitude, latitudeSign);
+        longitude = settings_location_sim_apply_axis_sign(longitude, longitudeSign);
+        if (!settings_location_sim_coordinates_valid(latitude, longitude)) return NO;
+    }
+
+    *latitudeOut = latitude;
+    *longitudeOut = longitude;
+    return YES;
+}
+
+static BOOL settings_location_sim_parse_coordinate_fields(NSString *latitudeText,
+                                                          NSString *longitudeText,
+                                                          double *latitudeOut,
+                                                          double *longitudeOut)
+{
+    if (!latitudeOut || !longitudeOut) return NO;
+    if (settings_location_sim_parse_coordinate_pair(latitudeText, latitudeOut, longitudeOut)) return YES;
+    if (settings_location_sim_parse_coordinate_pair(longitudeText, latitudeOut, longitudeOut)) return YES;
+
+    double latitude = 0.0;
+    double longitude = 0.0;
+    BOOL ok = settings_location_sim_parse_coordinate_component(latitudeText, YES, &latitude) &&
+              settings_location_sim_parse_coordinate_component(longitudeText, NO, &longitude) &&
+              settings_location_sim_coordinates_valid(latitude, longitude);
+    if (!ok) return NO;
+
+    *latitudeOut = latitude;
+    *longitudeOut = longitude;
+    return YES;
+}
+
+static BOOL settings_location_sim_is_active(NSUserDefaults *d)
+{
+    return [d boolForKey:kSettingsLocationSimStarted];
+}
+
+static void settings_location_sim_set_target(NSUserDefaults *d,
+                                             double latitude,
+                                             double longitude)
+{
+    [d setDouble:latitude forKey:kSettingsLocationSimLatitude];
+    [d setDouble:longitude forKey:kSettingsLocationSimLongitude];
+    [d setObject:@"Maps" forKey:kSettingsLocationSimHostProcess];
+    [d synchronize];
+}
+
+static void settings_location_sim_set_rockaway_defaults(NSUserDefaults *d)
+{
+    settings_location_sim_set_target(d, kLocationSimDefaultLatitude, kLocationSimDefaultLongitude);
+    [d setInteger:kLocationSimDefaultAltitude forKey:kSettingsLocationSimAltitude];
+    [d setInteger:kLocationSimDefaultAccuracy forKey:kSettingsLocationSimHorizontalAccuracy];
+    [d synchronize];
+}
+
+static NSString *settings_location_sim_target_summary(NSUserDefaults *d)
+{
+    double lat = [d doubleForKey:kSettingsLocationSimLatitude];
+    double lon = [d doubleForKey:kSettingsLocationSimLongitude];
+    NSInteger altitude = [d integerForKey:kSettingsLocationSimAltitude];
+    NSInteger accuracy = [d integerForKey:kSettingsLocationSimHorizontalAccuracy];
+    if (accuracy <= 0) accuracy = kLocationSimDefaultAccuracy;
+    return [NSString stringWithFormat:@"%.7f, %.7f via %@ (%ldm alt, %ldm acc)",
+            lat,
+            lon,
+            settings_location_sim_host_process(d),
+            (long)altitude,
+            (long)accuracy];
+}
+
+static NSString *settings_location_sim_mode_summary(NSUserDefaults *d)
+{
+    BOOL simulationStarted = [d boolForKey:kSettingsLocationSimStarted];
+    NSString *simulation = simulationStarted
+        ? @"Mode: Target simulation started"
+        : @"Mode: Real location requested";
+    NSString *note = simulationStarted ? @"\nUse Restore Real Location to stop it." : @"";
+    return [NSString stringWithFormat:@"%@%@\nTarget: %@", simulation, note,
+            settings_location_sim_target_summary(d)];
+}
+
+static BOOL settings_apply_location_sim_from_defaults_locked(NSUserDefaults *d)
+{
+    NSInteger accuracy = [d integerForKey:kSettingsLocationSimHorizontalAccuracy];
+    if (accuracy <= 0) accuracy = kLocationSimDefaultAccuracy;
+
+    NSString *host = settings_location_sim_host_process(d);
+    LocationSimConfig config = {
+        .latitude = [d doubleForKey:kSettingsLocationSimLatitude],
+        .longitude = [d doubleForKey:kSettingsLocationSimLongitude],
+        .altitude = (double)[d integerForKey:kSettingsLocationSimAltitude],
+        .horizontalAccuracy = (double)accuracy,
+        .verticalAccuracy = (double)accuracy,
+        .hostProcess = host.UTF8String,
+        .launchHost = true,
+    };
+    return locationsim_apply_static(&config);
+}
+
+static BOOL settings_stop_location_sim_from_defaults_locked(NSUserDefaults *d)
+{
+    NSString *host = settings_location_sim_host_process(d);
+    return locationsim_stop(host.UTF8String, true);
 }
 
 static void settings_schedule_live_apply_for_key(NSString *key)
@@ -6001,6 +6417,55 @@ static void settings_schedule_live_apply_for_key(NSString *key)
         return;
     }
 
+    if (settings_key_is_location_sim(key)) {
+        BOOL locsimStarted = [d boolForKey:kSettingsLocationSimStarted];
+        if ([key isEqualToString:kSettingsLocationSimEnabled]) {
+            [d setBool:NO forKey:kSettingsLocationSimEnabled];
+            [d synchronize];
+            settings_notify_package_queue_changed_async();
+            return;
+        }
+        if (!locsimStarted) {
+            settings_notify_package_queue_changed_async();
+            return;
+        }
+        if (!settings_location_sim_install_allowed()) {
+            log_user("[LOCSIM] Target refresh skipped: Location Simulator is unavailable in this build.\n");
+            settings_notify_package_queue_changed_async();
+            return;
+        }
+        dispatch_async(dispatch_get_global_queue(0, 0), ^{
+            if (__sync_lock_test_and_set(&g_settings_actions_running, 1)) {
+                log_user("[LOCSIM] Location update deferred: Apply Tweaks is still running.\n");
+                settings_notify_package_queue_changed_async();
+                return;
+            }
+            @try {
+                if (!settings_ensure_kexploit()) {
+                    printf("[LOCSIM] live target refresh failed to acquire KRW\n");
+                    log_user("[LOCSIM] Target refresh failed: kernel primitives were not acquired. Please try running chain again.\n");
+                    settings_notify_package_queue_changed_async();
+                    return;
+                }
+                @synchronized (settings_rc_lock()) {
+                    settings_destroy_springboard_remote_call_locked_internal("switching to Location Simulator", NO);
+                    bool ok = settings_apply_location_sim_from_defaults_locked(d);
+                    if (ok) {
+                        [d setBool:YES forKey:kSettingsLocationSimStarted];
+                        [d synchronize];
+                    }
+                    log_user("%s Location Simulator %s.\n",
+                             ok ? "[OK]" : "[WARN]",
+                             ok ? "target refreshed" : "did not apply cleanly");
+                }
+                settings_notify_package_queue_changed_async();
+            } @finally {
+                __sync_lock_release(&g_settings_actions_running);
+            }
+        });
+        return;
+    }
+
     if (!settings_key_is_sbc(key) || !g_springboard_rc_ready) return;
 
     uint64_t generation = __sync_add_and_fetch(&g_sbc_live_apply_generation, 1);
@@ -6131,6 +6596,14 @@ void settings_register_defaults(void)
         kSettingsGravityLiteFrictionPct: @50,
         kSettingsGravityLiteResistancePct: @50,
         kSettingsGravityLiteAngularResistancePct: @0,
+
+        kSettingsLocationSimEnabled: @NO,
+        kSettingsLocationSimLatitude: @(kLocationSimDefaultLatitude),
+        kSettingsLocationSimLongitude: @(kLocationSimDefaultLongitude),
+        kSettingsLocationSimAltitude: @(kLocationSimDefaultAltitude),
+        kSettingsLocationSimHorizontalAccuracy: @(kLocationSimDefaultAccuracy),
+        kSettingsLocationSimHostProcess: @"Maps",
+        kSettingsLocationSimStarted: @NO,
 
         kSettingsThemerEnabled: @NO,
         kSettingsThemerThemeID: kThemerThemeNone,
@@ -6837,6 +7310,7 @@ typedef NS_ENUM(NSInteger, SettingsSection) {
     SectionSnowBoardLite,
     SectionLiveWP,
     SectionGravityLite,
+    SectionLocationSim,
     SectionDragCoefficient,
     SectionAppSwitcherGrid,
     SectionQuickLoader,
@@ -8399,7 +8873,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     NSUInteger installerIdx = NSNotFound;
     for (NSUInteger i = 0; i < tab.viewControllers.count; i++) {
         UIViewController *vc = tab.viewControllers[i];
-        if ([vc.tabBarItem.title isEqualToString:@"Installer"]) {
+        if ([vc.tabBarItem.title isEqualToString:@"Packages"]) {
             installerIdx = i;
             break;
         }
@@ -9239,6 +9713,56 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         @{ @"kind": @"button",
            @"title": @"Restore Icon Layout",
            @"action": @"gravitylite-restore",
+            @"destructive": @YES },
+    ];
+}
+
+- (NSArray<NSDictionary *> *)locationSimRows
+{
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    return @[
+        @{ @"kind": @"info",
+           @"title": @"Mode",
+           @"subtitle": settings_location_sim_mode_summary(d) },
+
+        @{ @"kind": @"button",
+           @"title": @"Set Exact Coordinates…",
+           @"action": @"locsim-set-exact" },
+
+        @{ @"kind": @"button",
+           @"title": @"Major Cities…",
+           @"action": @"locsim-major-cities" },
+
+        @{ @"kind": @"button",
+           @"title": @"Simulate Rockaway Test Point",
+           @"action": @"locsim-preset-rockaway" },
+
+        @{ @"kind": @"slider",
+           @"key": kSettingsLocationSimAltitude,
+           @"title": @"Altitude",
+           @"min": @(-100),
+           @"max": @1000,
+           @"step": @1,
+           @"unit": @"m",
+           @"default": @(kLocationSimDefaultAltitude) },
+
+        @{ @"kind": @"slider",
+           @"key": kSettingsLocationSimHorizontalAccuracy,
+           @"title": @"Accuracy",
+           @"min": @1,
+           @"max": @100,
+           @"step": @1,
+           @"unit": @"m",
+           @"default": @(kLocationSimDefaultAccuracy) },
+
+        @{ @"kind": @"button",
+           @"title": @"Simulate Current Target",
+           @"action": @"locsim-apply" },
+
+        @{ @"kind": @"button",
+           @"title": @"Restore Real Location",
+           @"subtitle": @"Reset can take a few minutes. If location still looks simulated, reboot and wait a little longer.",
+           @"action": @"locsim-stop",
            @"destructive": @YES },
     ];
 }
@@ -9642,6 +10166,8 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         NSString *absPath = settings_livewp_absolute_path();
         NSString *videoName = (absPath && absPath.length > 0) ? [absPath lastPathComponent] : @"None";
         [out addObject:@{@"title": @"Video", @"value": videoName}];
+    } else if (section == SectionLocationSim) {
+        [out addObject:@{@"title": @"Target", @"value": settings_location_sim_target_summary(d)}];
     } else if (section == SectionGravityLite) {
         [out addObject:@{@"title": @"Dock", @"value": [d boolForKey:kSettingsGravityLiteDockEnabled] ? @"Included" : @"Home only"}];
         [out addObject:@{@"title": @"Strength", @"value": [NSString stringWithFormat:@"%ld%%", (long)[d integerForKey:kSettingsGravityLiteMagnitudePct]]}];
@@ -9681,6 +10207,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         case SectionRepoTweaks: return self.repoTweaksRows;
         case SectionLiveWP:    return self.livewpRows;
         case SectionGravityLite: return self.gravityLiteRows;
+        case SectionLocationSim: return self.locationSimRows;
         default: return @[];
     }
 }
@@ -9707,6 +10234,7 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         @{ @"title": @"SnowBoard Lite",     @"icon": @"square.stack.3d.up.fill",             @"color": [UIColor systemMintColor],   @"section": @(SectionSnowBoardLite) },
         @{ @"title": @"LiveWP",             @"icon": @"play.rectangle.fill",                 @"color": [UIColor systemPurpleColor], @"section": @(SectionLiveWP) },
         @{ @"title": @"Gravity Lite",       @"icon": @"arrow.down.circle.fill",              @"color": [UIColor systemGreenColor],  @"section": @(SectionGravityLite) },
+        @{ @"title": @"Location Simulator", @"icon": @"location.fill",                       @"color": [UIColor systemGreenColor],  @"section": @(SectionLocationSim) },
         @{ @"title": @"QuickLoader",        @"icon": @"bolt.fill",                           @"color": [UIColor systemYellowColor], @"section": @(SectionQuickLoader) },
         @{ @"title": @"RepoTweaks",         @"icon": @"tray.and.arrow.down.fill",            @"color": [UIColor systemBlueColor],   @"section": @(SectionRepoTweaks) },
         @{ @"title": @"Powercuff",          @"icon": @"bolt.slash.fill",                     @"color": [UIColor systemOrangeColor], @"section": @(SectionPowercuff) },
@@ -9894,6 +10422,9 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
     }
     if (s == SectionLiveWP) {
         return @"Play a video as your dynamic wallpaper on both lock screen and home screen. Select a video file from your device, then toggle Enable and hit Apply Tweaks. The video will loop continuously as your wallpaper.";
+    }
+    if (s == SectionLocationSim) {
+        return @"Beta CoreLocation simulation. Requires Apple Maps installed and set up — Maps is the RemoteCall host process that drives the simulation.\n\nThis is a manual tool, not an installable package. Use Simulate Current Target to start; use Restore Real Location to stop simulation and return CoreLocation to the device's real providers. Each run opens the activity log and marks completion when the request returns.\n\nNot all apps respect the simulated location. Apps that use their own location validation or additional signals may ignore it.\n\nCredits: kolbicz for the RemoteCall/CLSimulationManager GPS spoofer prototype, and ezzuldinSt's LSpoof for picker/route references.\n\nWarning: this can affect more than maps. Location-tied system behavior, including time zone and date/time handling, may behave unexpectedly. Only use this if you know what you're doing.";
     }
     if (s == SectionGravityLite) {
         return @"RemoteCall-only port of the classic Gravity icon physics tweak. Apply it, leave Cyanide with Keep Alive enabled, then tilt the device to steer icons. Restore Icon Layout resets captured icons.";
@@ -14765,6 +15296,27 @@ void cyanide_present_contact(UIViewController *host)
     [self presentViewController:nav animated:YES completion:nil];
 }
 
+- (void)presentActivityLogWithCompletion:(dispatch_block_t)completion
+{
+    if (self.presentedViewController) {
+        if ([self.presentedViewController isKindOfClass:UIAlertController.class]) {
+            __weak typeof(self) weakSelf = self;
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)),
+                           dispatch_get_main_queue(), ^{
+                [weakSelf presentActivityLogWithCompletion:completion];
+            });
+            return;
+        }
+        if (completion) completion();
+        return;
+    }
+
+    InstallProgressViewController *vc = [[InstallProgressViewController alloc] init];
+    UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:vc];
+    nav.modalPresentationStyle = UIModalPresentationAutomatic;
+    [self presentViewController:nav animated:YES completion:completion];
+}
+
 - (void)toggleChanged:(UISwitch *)sender
 {
     if (!settings_device_supported()) {
@@ -15161,6 +15713,216 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
         }
         settings_notify_package_queue_changed_async();
     });
+}
+
+- (void)reloadLocationSimUI
+{
+    [self.tableView reloadData];
+    [[NSNotificationCenter defaultCenter] postNotificationName:PackageQueueDidChangeNotification
+                                                        object:[PackageQueue sharedQueue]];
+}
+
+- (void)runLocationSimApply:(BOOL)apply
+{
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    if (apply && !settings_location_sim_install_allowed()) {
+        log_user("[LOCSIM] Location Simulator is unavailable in this build.\n");
+        return;
+    }
+
+    static volatile int sLocSimButtonInFlight = 0;
+    if (__sync_lock_test_and_set(&sLocSimButtonInFlight, 1)) {
+        log_user("[LOCSIM] A Location Simulator action is already running.\n");
+        return;
+    }
+
+    __weak typeof(self) weakSelf = self;
+    dispatch_block_t startAction = ^{
+        log_user("[LOCSIM] %s %s.\n",
+                 apply ? "Simulating" : "Restoring",
+                 apply ? settings_location_sim_target_summary(d).UTF8String : "real location");
+        dispatch_async(dispatch_get_global_queue(0, 0), ^{
+            BOOL actionOK = NO;
+            BOOL actionLockAcquired = NO;
+            NSString *completionMessage = apply
+                ? @"Location Simulator applied."
+                : @"Restore request sent. Real location may take a few minutes.";
+            @try {
+                actionLockAcquired = settings_try_claim_actions_lock("Location Simulator action",
+                                                                     "[LOCSIM] Another action is already running.");
+                if (!actionLockAcquired) {
+                    completionMessage = @"Location Simulator blocked: Apply Tweaks is still running.";
+                    return;
+                }
+                if (!settings_ensure_kexploit()) {
+                    log_user("[LOCSIM] Failed: kernel primitives not acquired. Please try running chain again.\n");
+                    completionMessage = @"Location Simulator failed: kernel primitives were not acquired. Please try running chain again.";
+                    return;
+                }
+
+                bool ok = false;
+                @synchronized (settings_rc_lock()) {
+                    settings_destroy_springboard_remote_call_locked_internal("switching to Location Simulator", NO);
+                    ok = apply
+                        ? settings_apply_location_sim_from_defaults_locked(d)
+                        : settings_stop_location_sim_from_defaults_locked(d);
+                    if (ok) {
+                        if (apply) {
+                            [d setBool:YES forKey:kSettingsLocationSimStarted];
+                        } else {
+                            [d setBool:NO forKey:kSettingsLocationSimStarted];
+                        }
+                        [d synchronize];
+                    }
+                }
+                actionOK = ok;
+                completionMessage = apply
+                    ? (ok ? @"Location Simulator applied." : @"Location Simulator failed. Check the log.")
+                    : (ok ? @"Restore request sent. Real location may take a few minutes." : @"Restore failed. Check the log.");
+                log_user("%s Location Simulator %s.\n",
+                         ok ? "[OK]" : "[WARN]",
+                         apply ? (ok ? "applied" : "did not apply cleanly")
+                               : (ok ? "stopped; real location should resume" : "did not stop cleanly"));
+            } @finally {
+                if (actionLockAcquired) settings_release_actions_lock();
+                __sync_lock_release(&sLocSimButtonInFlight);
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    __strong typeof(weakSelf) strongSelf = weakSelf;
+                    [strongSelf reloadLocationSimUI];
+                    [[NSNotificationCenter defaultCenter]
+                        postNotificationName:kSettingsActionsDidCompleteNotification
+                                      object:nil
+                                    userInfo:nil];
+                });
+            }
+        });
+    };
+    [self presentActivityLogWithCompletion:startAction];
+}
+
+- (void)setLocationSimTargetLatitude:(double)latitude
+                            longitude:(double)longitude
+                                 name:(NSString *)name
+                        applyIfActive:(BOOL)applyIfActive
+{
+    if (!settings_location_sim_coordinates_valid(latitude, longitude)) {
+        log_user("[LOCSIM] Invalid coordinates: lat=%f lon=%f\n", latitude, longitude);
+        return;
+    }
+
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    BOOL wasActive = settings_location_sim_is_active(d);
+    settings_location_sim_set_target(d, latitude, longitude);
+    log_user("[LOCSIM] Target set to %s: %s\n",
+             (name.length > 0 ? name : @"custom").UTF8String,
+             settings_location_sim_target_summary(d).UTF8String);
+    [self reloadLocationSimUI];
+    if (applyIfActive && wasActive) {
+        [self runLocationSimApply:YES];
+    }
+}
+
+- (void)presentLocationSimInvalidCoordinateAlert
+{
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Invalid Coordinates"
+                                                                message:@"Use decimal degrees. Latitude must be between -90 and 90. Longitude must be between -180 and 180. Chinese labels like 北纬/南纬/东经/西经 and full-width punctuation are supported."
+                                                         preferredStyle:UIAlertControllerStyleAlert];
+    [ac addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+    settings_present_controller(ac, self);
+}
+
+- (void)presentLocationSimExactCoordinatePrompt
+{
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Exact Coordinates"
+                                                                message:@"Enter decimal degrees, or paste a pair like 40.7128, -74.0060 or 北纬39.9042，东经116.4074."
+                                                         preferredStyle:UIAlertControllerStyleAlert];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"Latitude or lat, lon";
+        field.text = [NSString stringWithFormat:@"%.8f", [d doubleForKey:kSettingsLocationSimLatitude]];
+        field.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+    [ac addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.placeholder = @"Longitude";
+        field.text = [NSString stringWithFormat:@"%.8f", [d doubleForKey:kSettingsLocationSimLongitude]];
+        field.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+        field.clearButtonMode = UITextFieldViewModeWhileEditing;
+    }];
+
+    __weak typeof(self) weakSelf = self;
+    void (^commit)(BOOL) = ^(BOOL simulateNow) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) return;
+        double latitude = 0.0;
+        double longitude = 0.0;
+        BOOL ok = settings_location_sim_parse_coordinate_fields(ac.textFields.firstObject.text,
+                                                                ac.textFields.lastObject.text,
+                                                                &latitude,
+                                                                &longitude);
+        if (!ok) {
+            [strongSelf presentLocationSimInvalidCoordinateAlert];
+            return;
+        }
+        [strongSelf setLocationSimTargetLatitude:latitude
+                                       longitude:longitude
+                                            name:@"Exact coordinates"
+                                   applyIfActive:!simulateNow];
+        if (simulateNow) {
+            [strongSelf runLocationSimApply:YES];
+        }
+    };
+
+    [ac addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Set Target"
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(__unused UIAlertAction *action) {
+        commit(NO);
+    }]];
+    [ac addAction:[UIAlertAction actionWithTitle:@"Set & Simulate"
+                                           style:UIAlertActionStyleDefault
+                                         handler:^(__unused UIAlertAction *action) {
+        commit(YES);
+    }]];
+    settings_present_controller(ac, self);
+}
+
+- (void)presentLocationSimCityPicker
+{
+    NSArray<NSDictionary *> *cities = @[
+        @{ @"name": @"New York City", @"lat": @40.7128, @"lon": @(-74.0060) },
+        @{ @"name": @"Los Angeles", @"lat": @34.0522, @"lon": @(-118.2437) },
+        @{ @"name": @"Chicago", @"lat": @41.8781, @"lon": @(-87.6298) },
+        @{ @"name": @"Miami", @"lat": @25.7617, @"lon": @(-80.1918) },
+        @{ @"name": @"London", @"lat": @51.5074, @"lon": @(-0.1278) },
+        @{ @"name": @"Paris", @"lat": @48.8566, @"lon": @2.3522 },
+        @{ @"name": @"Tokyo", @"lat": @35.6762, @"lon": @139.6503 },
+        @{ @"name": @"Sydney", @"lat": @(-33.8688), @"lon": @151.2093 },
+        @{ @"name": @"Dubai", @"lat": @25.2048, @"lon": @55.2708 },
+        @{ @"name": @"Singapore", @"lat": @1.3521, @"lon": @103.8198 },
+    ];
+
+    UIAlertController *ac = [UIAlertController alertControllerWithTitle:@"Major Cities"
+                                                                message:nil
+                                                         preferredStyle:UIAlertControllerStyleActionSheet];
+    __weak typeof(self) weakSelf = self;
+    for (NSDictionary *city in cities) {
+        NSString *name = city[@"name"];
+        [ac addAction:[UIAlertAction actionWithTitle:name
+                                               style:UIAlertActionStyleDefault
+                                             handler:^(__unused UIAlertAction *action) {
+            __strong typeof(weakSelf) strongSelf = weakSelf;
+            [strongSelf setLocationSimTargetLatitude:[city[@"lat"] doubleValue]
+                                           longitude:[city[@"lon"] doubleValue]
+                                                name:name
+                                       applyIfActive:NO];
+            [strongSelf runLocationSimApply:YES];
+        }]];
+    }
+    [ac addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    ac.popoverPresentationController.sourceView = self.view;
+    ac.popoverPresentationController.sourceRect = self.view.bounds;
+    settings_present_controller(ac, self);
 }
 
 - (void)presentNiceBarSystemPickerForSlot:(NSInteger)slot
@@ -15679,6 +16441,41 @@ trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath *)indexPath
         NSDictionary *row = [self rowsForSection:indexPath.section][indexPath.row];
         if (![row[@"kind"] isEqualToString:@"button"]) return;
         [self runGravityLiteAction:row[@"action"]];
+        return;
+    }
+
+    if (indexPath.section == SectionLocationSim) {
+        NSDictionary *row = [self rowsForSection:indexPath.section][indexPath.row];
+        if (![row[@"kind"] isEqualToString:@"button"]) return;
+        NSString *action = row[@"action"];
+        NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+
+        if ([action isEqualToString:@"locsim-preset-rockaway"]) {
+            settings_location_sim_set_rockaway_defaults(d);
+            log_user("[LOCSIM] Loaded Rockaway test point: %s\n",
+                     settings_location_sim_target_summary(d).UTF8String);
+            [self reloadLocationSimUI];
+            [self runLocationSimApply:YES];
+            return;
+        }
+
+        if ([action isEqualToString:@"locsim-set-exact"]) {
+            [self presentLocationSimExactCoordinatePrompt];
+            return;
+        }
+
+        if ([action isEqualToString:@"locsim-major-cities"]) {
+            [self presentLocationSimCityPicker];
+            return;
+        }
+
+        if ([action isEqualToString:@"locsim-apply"] ||
+            [action isEqualToString:@"locsim-stop"]) {
+            BOOL apply = [action isEqualToString:@"locsim-apply"];
+            [self runLocationSimApply:apply];
+            return;
+        }
+
         return;
     }
 
