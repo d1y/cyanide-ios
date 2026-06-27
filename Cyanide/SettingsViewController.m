@@ -8132,6 +8132,7 @@ createWebViewWithConfiguration:(WKWebViewConfiguration *)configuration
 @property (nonatomic, strong) NSString *qlRawScript;
 @property (nonatomic, strong) NSMutableDictionary *qlValues;
 @property (nonatomic, strong) NSArray *qlParams;
+@property (nonatomic, strong) NSDictionary *qlLoadedInfo;
 @end
 
 // Singleton delegate so MFMailCompose's host VC doesn't need to conform. Lives
@@ -9856,28 +9857,27 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
 
     if (filename) {
         NSString *source = hasRepoTweak ? @"From source repo" : @"Local file";
-        [rows addObject:@{ @"kind": @"ql-loaded",
-                           @"title": filename,
-                           @"subtitle": source,
-                           @"enabled": @(enabled) }];
+        self.qlLoadedInfo = @{
+            @"title": filename,
+            @"subtitle": source,
+            @"enabled": @(enabled),
+            @"applied": @(applied)
+        };
     } else {
-        [rows addObject:@{ @"kind": @"ql-empty" }];
+        self.qlLoadedInfo = nil;
     }
 
-    if (self.qlParams.count > 0) {
-        [rows addObject:@{ @"kind": @"info", @"title": @"Parameters", @"subtitle": @"Changes take effect immediately." }];
-        for (NSDictionary *param in self.qlParams) {
-            NSMutableDictionary *rowDict = [NSMutableDictionary dictionaryWithDictionary:@{
-                @"kind": @"ql-param",
-                @"paramType": param[@"type"],
-                @"varName": param[@"varName"],
-                @"title": param[@"label"],
-                @"default": param[@"default"]
-            }];
-            if (param[@"min"]) rowDict[@"min"] = param[@"min"];
-            if (param[@"max"]) rowDict[@"max"] = param[@"max"];
-            [rows addObject:rowDict];
-        }
+    for (NSDictionary *param in self.qlParams) {
+        NSMutableDictionary *rowDict = [NSMutableDictionary dictionaryWithDictionary:@{
+            @"kind": @"ql-param",
+            @"paramType": param[@"type"],
+            @"varName": param[@"varName"],
+            @"title": param[@"label"],
+            @"default": param[@"default"]
+        }];
+        if (param[@"min"]) rowDict[@"min"] = param[@"min"];
+        if (param[@"max"]) rowDict[@"max"] = param[@"max"];
+        [rows addObject:rowDict];
     }
 
     if (self.qlStandalone) {
@@ -10511,6 +10511,139 @@ didChangeAuthorizationStatus:(CLAuthorizationStatus)status
         if ((RootSection)section == RootSectionSystemBundles && self.systemBundleRows.count == 0) return CGFLOAT_MIN;
     }
     return UITableViewAutomaticDimension;
+}
+
+- (UIView *)tableView:(UITableView *)tableView viewForHeaderInSection:(NSInteger)section
+{
+    if (!self.detailMode || self.underlyingSection != SectionQuickLoader) return nil;
+
+    UIView *container = [[UIView alloc] init];
+    container.backgroundColor = UIColor.clearColor;
+
+    UIView *card = [[UIView alloc] init];
+    card.translatesAutoresizingMaskIntoConstraints = NO;
+    card.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *trait) {
+        return trait.userInterfaceStyle == UIUserInterfaceStyleDark ? [UIColor systemGray5Color] : UIColor.whiteColor;
+    }];
+    card.layer.cornerRadius = 14.0;
+    card.layer.borderWidth = 1.0 / UIScreen.mainScreen.scale;
+    card.layer.borderColor = UIColor.separatorColor.CGColor;
+
+    UIStackView *stack = [[UIStackView alloc] init];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 6;
+
+    if (self.qlLoadedInfo) {
+        BOOL active = [self.qlLoadedInfo[@"enabled"] boolValue];
+        BOOL applied = [self.qlLoadedInfo[@"applied"] boolValue];
+        NSString *name = self.qlLoadedInfo[@"title"];
+        NSString *source = self.qlLoadedInfo[@"subtitle"];
+
+        UIStackView *topRow = [[UIStackView alloc] init];
+        topRow.axis = UILayoutConstraintAxisHorizontal;
+        topRow.spacing = 10;
+        topRow.alignment = UIStackViewAlignmentCenter;
+
+        UIImageView *icon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"doc.text.fill"]];
+        icon.contentMode = UIViewContentModeScaleAspectFit;
+        icon.tintColor = active ? UIColor.systemGreenColor : UIColor.systemOrangeColor;
+        [icon.widthAnchor constraintEqualToConstant:22].active = YES;
+        [icon.heightAnchor constraintEqualToConstant:22].active = YES;
+        [icon setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+        UILabel *nameLabel = [[UILabel alloc] init];
+        nameLabel.text = name;
+        nameLabel.font = [UIFont systemFontOfSize:17 weight:UIFontWeightSemibold];
+        nameLabel.textColor = UIColor.labelColor;
+
+        UILabel *badge = [[UILabel alloc] init];
+        badge.text = active ? @" Active" : @" Inactive";
+        badge.font = [UIFont systemFontOfSize:12 weight:UIFontWeightMedium];
+        badge.textColor = active ? UIColor.systemGreenColor : UIColor.systemOrangeColor;
+        badge.backgroundColor = [active ? UIColor.systemGreenColor : UIColor.systemOrangeColor colorWithAlphaComponent:0.12];
+        badge.layer.cornerRadius = 6;
+        badge.clipsToBounds = YES;
+        badge.textAlignment = NSTextAlignmentCenter;
+        [badge.widthAnchor constraintEqualToAnchor:badge.heightAnchor multiplier:3.5].active = YES;
+        [badge.heightAnchor constraintEqualToConstant:22].active = YES;
+
+        UILabel *subtitleLabel = [[UILabel alloc] init];
+        subtitleLabel.text = applied ? [NSString stringWithFormat:@"%@ · Applied", source] : source;
+        subtitleLabel.font = [UIFont systemFontOfSize:13];
+        subtitleLabel.textColor = applied ? UIColor.systemGreenColor : UIColor.secondaryLabelColor;
+
+        [topRow addArrangedSubview:icon];
+        [topRow addArrangedSubview:nameLabel];
+        [topRow addArrangedSubview:badge];
+        [stack addArrangedSubview:topRow];
+        [stack addArrangedSubview:subtitleLabel];
+    } else {
+        UIImageView *emptyIcon = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"doc.text"]];
+        emptyIcon.contentMode = UIViewContentModeScaleAspectFit;
+        emptyIcon.tintColor = UIColor.tertiaryLabelColor;
+        [emptyIcon.widthAnchor constraintEqualToConstant:22].active = YES;
+        [emptyIcon.heightAnchor constraintEqualToConstant:22].active = YES;
+        [emptyIcon setContentHuggingPriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisHorizontal];
+
+        UILabel *emptyTitle = [[UILabel alloc] init];
+        emptyTitle.text = @"No Tweak Loaded";
+        emptyTitle.font = [UIFont systemFontOfSize:17 weight:UIFontWeightMedium];
+        emptyTitle.textColor = UIColor.labelColor;
+
+        UILabel *emptySubtitle = [[UILabel alloc] init];
+        emptySubtitle.text = @"Load a .js file or install from Sources";
+        emptySubtitle.font = [UIFont systemFontOfSize:13];
+        emptySubtitle.textColor = UIColor.tertiaryLabelColor;
+
+        UIStackView *emptyRow = [[UIStackView alloc] init];
+        emptyRow.axis = UILayoutConstraintAxisHorizontal;
+        emptyRow.spacing = 10;
+        emptyRow.alignment = UIStackViewAlignmentCenter;
+        [emptyRow addArrangedSubview:emptyIcon];
+        [emptyRow addArrangedSubview:emptyTitle];
+
+        [stack addArrangedSubview:emptyRow];
+        [stack addArrangedSubview:emptySubtitle];
+    }
+
+    if (self.qlParams.count > 0) {
+        UIView *sep = [[UIView alloc] init];
+        sep.backgroundColor = UIColor.separatorColor;
+        sep.translatesAutoresizingMaskIntoConstraints = NO;
+        [sep.heightAnchor constraintEqualToConstant:1.0 / UIScreen.mainScreen.scale].active = YES;
+
+        UILabel *paramsLabel = [[UILabel alloc] init];
+        paramsLabel.text = @"Parameters";
+        paramsLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+        paramsLabel.textColor = UIColor.labelColor;
+
+        UILabel *hintLabel = [[UILabel alloc] init];
+        hintLabel.text = @"Changes take effect immediately.";
+        hintLabel.font = [UIFont systemFontOfSize:12];
+        hintLabel.textColor = UIColor.tertiaryLabelColor;
+
+        [stack addArrangedSubview:sep];
+        [stack addArrangedSubview:paramsLabel];
+        [stack addArrangedSubview:hintLabel];
+    }
+
+    [card addSubview:stack];
+    [container addSubview:card];
+
+    CGFloat tableMargin = tableView.layoutMargins.left;
+    [NSLayoutConstraint activateConstraints:@[
+        [card.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [card.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [card.topAnchor constraintEqualToAnchor:container.topAnchor constant:12],
+        [card.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-4],
+        [stack.leadingAnchor constraintEqualToAnchor:card.leadingAnchor constant:tableMargin],
+        [stack.trailingAnchor constraintEqualToAnchor:card.trailingAnchor constant:-tableMargin],
+        [stack.topAnchor constraintEqualToAnchor:card.topAnchor constant:16],
+        [stack.bottomAnchor constraintEqualToAnchor:card.bottomAnchor constant:-16],
+    ]];
+
+    return container;
 }
 
 - (CGFloat)tableView:(UITableView *)tableView heightForFooterInSection:(NSInteger)section
@@ -14792,6 +14925,9 @@ void cyanide_present_contact(UIViewController *host)
             }
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
             cell.accessoryView = nil;
+            cell.backgroundColor = UIColor.clearColor;
+            cell.contentView.backgroundColor = UIColor.clearColor;
+            cell.separatorInset = UIEdgeInsetsMake(0, 10000, 0, 0);
 
             UIListContentConfiguration *config = [UIListContentConfiguration subtitleCellConfiguration];
             UIColor *previewColor = colorFromHexString(currentValue ?: @"#FF0000");
@@ -14838,6 +14974,9 @@ void cyanide_present_contact(UIViewController *host)
             }
             cell.selectionStyle = UITableViewCellSelectionStyleNone;
             cell.accessoryView = nil;
+            cell.backgroundColor = UIColor.clearColor;
+            cell.contentView.backgroundColor = UIColor.clearColor;
+            cell.separatorInset = UIEdgeInsetsMake(0, 10000, 0, 0);
 
             UIListContentConfiguration *config = [UIListContentConfiguration subtitleCellConfiguration];
             config.image = CYIconBadgeImage(iconName, iconColor, 32.0);
@@ -14904,6 +15043,9 @@ void cyanide_present_contact(UIViewController *host)
             cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleValue1 reuseIdentifier:@"ql-param"];
         }
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.backgroundColor = UIColor.clearColor;
+        cell.contentView.backgroundColor = UIColor.clearColor;
+        cell.separatorInset = UIEdgeInsetsMake(0, 10000, 0, 0);
 
         UIListContentConfiguration *config = [UIListContentConfiguration valueCellConfiguration];
         config.image = CYIconBadgeImage(iconName, iconColor, 32.0);
@@ -15004,33 +15146,31 @@ void cyanide_present_contact(UIViewController *host)
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
         cell.backgroundColor = UIColor.clearColor;
         cell.contentView.backgroundColor = UIColor.clearColor;
-        cell.separatorInset = UIEdgeInsetsMake(0, CGRectGetWidth(tableView.bounds), 0, 0);
+        cell.separatorInset = UIEdgeInsetsMake(0, 10000, 0, 0);
 
-        NSString *action = row[@"action"];
-        BOOL destructive = [row[@"destructive"] boolValue];
         NSString *title = row[@"title"];
+        BOOL destructive = [row[@"destructive"] boolValue];
 
-        UIButtonConfiguration *btnConfig = [UIButtonConfiguration filledButtonConfiguration];
-        btnConfig.title = title;
-        btnConfig.buttonSize = UIButtonConfigurationSizeLarge;
-        btnConfig.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-        btnConfig.baseForegroundColor = UIColor.whiteColor;
-        btnConfig.baseBackgroundColor = destructive ? UIColor.systemRedColor : self.view.tintColor;
-        btnConfig.contentInsets = NSDirectionalEdgeInsetsMake(14, 24, 14, 24);
-
-        UIButton *button = [UIButton buttonWithConfiguration:btnConfig primaryAction:nil];
+        UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
         button.translatesAutoresizingMaskIntoConstraints = NO;
+        [button setTitle:title forState:UIControlStateNormal];
+        button.titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+        [button setTitleColor:destructive ? UIColor.systemRedColor : self.view.tintColor forState:UIControlStateNormal];
+        button.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+        button.layer.cornerRadius = 24.0;
+        button.layer.cornerCurve = kCACornerCurveContinuous;
+        button.layer.borderWidth = 1.0;
+        button.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.22].CGColor;
         [button addTarget:self action:@selector(handleQuickLoaderButtonAction:) forControlEvents:UIControlEventTouchUpInside];
-
         [cell.contentView addSubview:button];
 
         UILayoutGuide *m = cell.contentView.layoutMarginsGuide;
         [NSLayoutConstraint activateConstraints:@[
             [button.leadingAnchor constraintEqualToAnchor:m.leadingAnchor],
             [button.trailingAnchor constraintEqualToAnchor:m.trailingAnchor],
-            [button.topAnchor constraintEqualToAnchor:m.topAnchor constant:4.0],
-            [button.bottomAnchor constraintEqualToAnchor:m.bottomAnchor constant:-4.0],
-            [button.heightAnchor constraintEqualToConstant:52.0],
+            [button.topAnchor constraintEqualToAnchor:m.topAnchor constant:2.0],
+            [button.bottomAnchor constraintEqualToAnchor:m.bottomAnchor constant:-2.0],
+            [button.heightAnchor constraintEqualToConstant:50.0],
         ]];
         return cell;
     }

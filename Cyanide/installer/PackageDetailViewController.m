@@ -515,6 +515,13 @@ typedef NS_ENUM(NSInteger, PackageDetailSection) {
             values:values
             repoURL:repoURL
             tweakID:tweakID];
+        __weak __typeof(self) weakSelf = self;
+        configVC.dismissHandler = ^{
+            [weakSelf dismissViewControllerAnimated:YES completion:^{
+                log_user("[INSTALLER] Queued install: %s\n", weakSelf.package.name.UTF8String);
+                [[PackageQueue sharedQueue] toggleForPackage:weakSelf.package];
+            }];
+        };
         UINavigationController *nav = [[UINavigationController alloc] initWithRootViewController:configVC];
         nav.modalPresentationStyle = UIModalPresentationPageSheet;
         if (nav.traitCollection.userInterfaceIdiom == UIUserInterfaceIdiomPad) {

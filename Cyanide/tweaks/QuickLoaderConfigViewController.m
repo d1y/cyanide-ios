@@ -13,6 +13,7 @@ static bool quickloader_valid_identifier(const char *name);
 @property (nonatomic, strong) NSArray<NSDictionary *> *params;
 @property (nonatomic, strong) UIScrollView *scrollView;
 @property (nonatomic, strong) UIStackView *stackView;
+@property (nonatomic, strong) UIButton *applyButton;
 @end
 
 @implementation QuickLoaderConfigViewController
@@ -51,13 +52,7 @@ static bool quickloader_valid_identifier(const char *name);
         initWithImage:[UIImage systemImageNamed:@"xmark"]
         style:UIBarButtonItemStylePlain
         target:self action:@selector(didTapCancel)];
-
-    UIBarButtonItem *saveItem = [[UIBarButtonItem alloc]
-        initWithTitle:@"Save & Apply"
-        style:UIBarButtonItemStyleDone
-        target:self action:@selector(didTapSave)];
-    saveItem.tintColor = self.view.tintColor;
-    self.navigationItem.rightBarButtonItem = saveItem;
+    self.navigationItem.rightBarButtonItem = nil;
 }
 
 - (void)setupScrollView
@@ -467,29 +462,27 @@ static bool quickloader_valid_identifier(const char *name);
 
 - (void)addApplyButton
 {
-    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
-    button.translatesAutoresizingMaskIntoConstraints = NO;
-
-    UIButtonConfiguration *cfg = [UIButtonConfiguration filledButtonConfiguration];
-    cfg.title = @"Activate & Apply";
-    cfg.buttonSize = UIButtonConfigurationSizeLarge;
-    cfg.cornerStyle = UIButtonConfigurationCornerStyleCapsule;
-    cfg.baseForegroundColor = UIColor.whiteColor;
-    cfg.baseBackgroundColor = self.view.tintColor;
-    cfg.contentInsets = NSDirectionalEdgeInsetsMake(16, 24, 16, 24);
-    button.configuration = cfg;
-
-    [button addTarget:self action:@selector(didTapSave) forControlEvents:UIControlEventTouchUpInside];
+    _applyButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    _applyButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [_applyButton setTitle:@"Save & Install" forState:UIControlStateNormal];
+    _applyButton.titleLabel.font = [UIFont systemFontOfSize:17.0 weight:UIFontWeightSemibold];
+    [_applyButton setTitleColor:self.view.tintColor forState:UIControlStateNormal];
+    _applyButton.backgroundColor = UIColor.secondarySystemGroupedBackgroundColor;
+    _applyButton.layer.cornerRadius = 24.0;
+    _applyButton.layer.cornerCurve = kCACornerCurveContinuous;
+    _applyButton.layer.borderWidth = 1.0;
+    _applyButton.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.22].CGColor;
+    [_applyButton addTarget:self action:@selector(didTapSave) forControlEvents:UIControlEventTouchUpInside];
 
     UIView *container = [[UIView alloc] init];
-    [container addSubview:button];
+    [container addSubview:_applyButton];
 
     [NSLayoutConstraint activateConstraints:@[
-        [button.topAnchor constraintEqualToAnchor:container.topAnchor constant:4],
-        [button.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
-        [button.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
-        [button.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-4],
-        [button.heightAnchor constraintEqualToConstant:52],
+        [_applyButton.topAnchor constraintEqualToAnchor:container.topAnchor constant:4],
+        [_applyButton.leadingAnchor constraintEqualToAnchor:container.leadingAnchor],
+        [_applyButton.trailingAnchor constraintEqualToAnchor:container.trailingAnchor],
+        [_applyButton.bottomAnchor constraintEqualToAnchor:container.bottomAnchor constant:-4],
+        [_applyButton.heightAnchor constraintEqualToConstant:50],
     ]];
 
     [self.stackView addArrangedSubview:container];
@@ -512,19 +505,23 @@ static bool quickloader_valid_identifier(const char *name);
         quickloader_save_repo_tweak(@"", @"", self.displayName, self.rawScript, self.values);
     }
 
-    NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
-    [d setBool:YES forKey:kSettingsQuickLoaderEnabled];
-    [d synchronize];
+    if (self.dismissHandler) {
+        self.dismissHandler();
+    } else {
+        NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+        [d setBool:YES forKey:kSettingsQuickLoaderEnabled];
+        [d synchronize];
 
-    if (quickloader_is_driven_by_repo_tweak() || !self.repoURL) {
-        quickloader_refresh_active_repo_tweak();
+        if (quickloader_is_driven_by_repo_tweak() || !self.repoURL) {
+            quickloader_refresh_active_repo_tweak();
+        }
+
+        quickloader_apply_in_session();
+
+        [[NSNotificationCenter defaultCenter] postNotificationName:@"PackageQueueDidChangeNotification" object:nil];
+
+        [self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
     }
-
-    quickloader_apply_in_session();
-
-    [[NSNotificationCenter defaultCenter] postNotificationName:@"PackageQueueDidChangeNotification" object:nil];
-
-    [self.presentingViewController dismissViewControllerAnimated:YES completion:nil];
 }
 
 #pragma mark - Color helpers
