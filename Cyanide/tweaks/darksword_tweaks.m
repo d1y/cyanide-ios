@@ -5,12 +5,18 @@
 #import "darksword_tweaks.h"
 #import "remote_objc.h"
 #import "../TaskRop/RemoteCall.h"
+#import <Foundation/Foundation.h>
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
 #import "../LogTextView.h"
 
 static const useconds_t kDSTSettleUS = 50000;
+
+static int ds_ios_major_version(void)
+{
+    return (int)[[NSProcessInfo processInfo] operatingSystemVersion].majorVersion;
+}
 
 static uint64_t ds_try_msg0(uint64_t obj, const char *selName)
 {
@@ -80,6 +86,67 @@ static bool ds_set_trailing_controllers(uint64_t obj, uint64_t value, const char
     return ds_poke_pointer_ivar(obj, cls, "_trailingCustomViewControllers", value);
 }
 
+static bool ds_set_trailing_controller(uint64_t obj, uint64_t value, const char *tag)
+{
+    if (!r_is_objc_ptr(obj)) return false;
+
+    const char *setters[] = {
+        "setTrailingCustomViewController:",
+        "_setTrailingCustomViewController:",
+    };
+    for (size_t i = 0; i < sizeof(setters) / sizeof(setters[0]); i++) {
+        if (!r_responds(obj, setters[i])) continue;
+        r_msg2_main(obj, setters[i], value, 0, 0, 0);
+        printf("[DST:APPLIB] %s via %s\n", tag, setters[i]);
+        usleep(kDSTSettleUS);
+        return true;
+    }
+
+    uint64_t cls = ds_object_class(obj);
+    bool ok = ds_poke_pointer_ivar(obj, cls, "_trailingCustomViewController", value);
+    if (ok) printf("[DST:APPLIB] %s via _trailingCustomViewController\n", tag);
+    return ok;
+}
+
+static bool ds_clear_overlay_library_controller(uint64_t mgr)
+{
+    if (!r_is_objc_ptr(mgr)) return false;
+
+    if (r_responds(mgr, "setOverlayLibraryViewController:")) {
+        r_msg2_main(mgr, "setOverlayLibraryViewController:", 0, 0, 0, 0);
+        printf("[DST:APPLIB] iconManager via setOverlayLibraryViewController:\n");
+        usleep(kDSTSettleUS);
+        return true;
+    }
+
+    uint64_t cls = ds_object_class(mgr);
+    bool ok = ds_poke_pointer_ivar(mgr, cls, "_overlayLibraryViewController", 0);
+    if (ok) printf("[DST:APPLIB] iconManager via _overlayLibraryViewController\n");
+    return ok;
+}
+
+static bool ds_disable_app_library_singular_path(uint64_t mgr,
+                                                 uint64_t rootFC,
+                                                 uint64_t rootView)
+{
+    bool trailingOK = false;
+
+    trailingOK |= ds_set_trailing_controller(mgr, 0, "iconManager");
+    (void)ds_clear_overlay_library_controller(mgr);
+    trailingOK |= ds_set_trailing_controller(rootFC, 0, "rootFolderController");
+
+    uint64_t rootConfig = ds_try_msg0(rootFC, "configuration");
+    if (r_is_objc_ptr(rootConfig)) {
+        trailingOK |= ds_set_trailing_controller(rootConfig, 0, "rootFolderControllerConfiguration");
+    }
+
+    if (r_is_objc_ptr(rootView)) {
+        trailingOK |= ds_set_trailing_controller(rootView, 0, "rootFolderView");
+    }
+
+    return trailingOK;
+}
+
 static bool ds_poke_double_ivar(uint64_t obj, uint64_t cls, const char *name, double value)
 {
     uint64_t target = ds_resolve_ivar_target(obj, cls, name);
@@ -127,6 +194,31 @@ bool darksword_tweak_disable_app_library_in_session(void)
 {
     printf("[DST:APPLIB] disabling app library\n");
 
+    uint64_t clsIC = r_class("SBIconController");
+    uint64_t ctrl = r_is_objc_ptr(clsIC) ? r_msg2(clsIC, "sharedInstance", 0, 0, 0, 0) : 0;
+    uint64_t mgr = ds_try_msg0(ctrl, "iconManager");
+    uint64_t rootFC = ds_try_msg0(mgr, "rootFolderController");
+    if (!r_is_objc_ptr(rootFC)) {
+        printf("[DST:APPLIB] rootFolderController nil\n");
+        return false;
+    }
+
+    uint64_t rootView = ds_try_msg0(rootFC, "rootFolderView");
+    if (!r_is_objc_ptr(rootView)) {
+        printf("[DST:APPLIB] rootFolderView nil\n");
+    }
+
+    bool ok = false;
+    if (ds_ios_major_version() == 17) {
+        printf("[DST:APPLIB] using iOS 17 singular controller path\n");
+        ok = ds_disable_app_library_singular_path(mgr, rootFC, rootView);
+        if (ok) {
+            ds_refresh_root_folder_after_app_library_change(rootFC, rootView);
+            printf("[DST:APPLIB] result=%d\n", ok);
+            return ok;
+        }
+    }
+
     uint64_t NSArray = r_class("NSArray");
     uint64_t emptyArr = r_is_objc_ptr(NSArray) ? r_msg2(NSArray, "new", 0, 0, 0, 0) : 0;
     if (!r_is_objc_ptr(emptyArr)) {
@@ -137,23 +229,16 @@ bool darksword_tweak_disable_app_library_in_session(void)
         return false;
     }
 
-    uint64_t clsIC = r_class("SBIconController");
-    uint64_t ctrl = r_is_objc_ptr(clsIC) ? r_msg2(clsIC, "sharedInstance", 0, 0, 0, 0) : 0;
-    uint64_t mgr = ds_try_msg0(ctrl, "iconManager");
-    uint64_t rootFC = ds_try_msg0(mgr, "rootFolderController");
-    if (!r_is_objc_ptr(rootFC)) {
-        printf("[DST:APPLIB] rootFolderController nil\n");
-        return false;
-    }
-
-    bool ok = false;
+    ok = false;
     ok |= ds_set_trailing_controllers(rootFC, emptyArr, "rootFolderController");
 
-    uint64_t rootView = ds_try_msg0(rootFC, "rootFolderView");
     if (r_is_objc_ptr(rootView)) {
         ok |= ds_set_trailing_controllers(rootView, emptyArr, "rootFolderView");
-    } else {
-        printf("[DST:APPLIB] rootFolderView nil\n");
+    }
+
+    if (!ok && ds_ios_major_version() != 17) {
+        printf("[DST:APPLIB] plural path failed; trying singular controller fallback\n");
+        ok = ds_disable_app_library_singular_path(mgr, rootFC, rootView);
     }
 
     if (ok) ds_refresh_root_folder_after_app_library_change(rootFC, rootView);
@@ -317,6 +402,22 @@ static DTLockOutcome ds_install_double_tap_on_view(uint64_t view, uint64_t sb, u
     return DTLockOutcomeInstalled;
 }
 
+static bool ds_remove_double_tap_from_view(uint64_t view, uint64_t assocKey, const char *tag)
+{
+    if (!r_is_objc_ptr(view) || !assocKey) return false;
+
+    uint64_t existing = r_dlsym_call(R_TIMEOUT, "objc_getAssociatedObject",
+                                     view, assocKey, 0, 0, 0, 0, 0, 0);
+    if (!r_is_objc_ptr(existing)) return false;
+
+    r_msg2_main(view, "removeGestureRecognizer:", existing, 0, 0, 0);
+    r_dlsym_call(R_TIMEOUT, "objc_setAssociatedObject",
+                 view, assocKey, 0, 0, 0, 0, 0, 0);
+    printf("[DST:LOCK] removed window-level recognizer from %s view=0x%llx\n",
+           tag ? tag : "view", view);
+    return true;
+}
+
 bool darksword_tweak_double_tap_to_lock_in_session(void)
 {
     printf("[DST:LOCK] installing double-tap to lock\n");
@@ -340,26 +441,25 @@ bool darksword_tweak_double_tap_to_lock_in_session(void)
         ok |= (ds_install_double_tap_on_view(homeView, sb, selLock, assocKey, "homescreen", true) != DTLockOutcomeFailed);
     }
 
-    uint64_t app = r_msg2(r_class("UIApplication"), "sharedApplication", 0, 0, 0, 0);
-    uint64_t windows = ds_try_msg0(app, "windows");
-    uint64_t count = ds_try_msg0(windows, "count");
-    uint64_t limit = count < 20 ? count : 20;
-    int installed = 0, alreadyInstalled = 0, failed = 0, skipped = 0;
-    for (uint64_t i = 0; i < limit; i++) {
-        uint64_t win = r_msg2(windows, "objectAtIndex:", i, 0, 0, 0);
-        if (!r_is_objc_ptr(win) || win == homeView) { skipped++; continue; }
+    if (remote_call_uses_vphone_bridge()) {
+        printf("[DST:LOCK] vphone: skipped UIApplication windows cleanup\n");
+    } else {
+        uint64_t app = r_msg2(r_class("UIApplication"), "sharedApplication", 0, 0, 0, 0);
+        uint64_t windows = ds_try_msg0(app, "windows");
+        uint64_t count = ds_try_msg0(windows, "count");
+        uint64_t limit = count < 20 ? count : 20;
+        int removed = 0, skipped = 0;
+        for (uint64_t i = 0; i < limit; i++) {
+            uint64_t win = r_msg2(windows, "objectAtIndex:", i, 0, 0, 0);
+            if (!r_is_objc_ptr(win) || win == homeView) { skipped++; continue; }
 
-        char tag[32];
-        snprintf(tag, sizeof(tag), "window[%llu]", i);
-        DTLockOutcome r = ds_install_double_tap_on_view(win, sb, selLock, assocKey, tag, false);
-        switch (r) {
-            case DTLockOutcomeInstalled:        installed++; ok = true; break;
-            case DTLockOutcomeAlreadyInstalled: alreadyInstalled++;     break;
-            case DTLockOutcomeFailed:           failed++;               break;
+            char tag[32];
+            snprintf(tag, sizeof(tag), "window[%llu]", i);
+            if (ds_remove_double_tap_from_view(win, assocKey, tag)) removed++;
         }
+        printf("[DST:LOCK] windows scanned=%llu removed=%d skipped=%d\n",
+               limit, removed, skipped);
     }
-    printf("[DST:LOCK] windows scanned=%llu installed=%d already=%d skipped=%d failed=%d\n",
-           limit, installed, alreadyInstalled, skipped, failed);
 
     printf("[DST:LOCK] result=%d\n", ok);
     return ok;

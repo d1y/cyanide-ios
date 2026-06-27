@@ -4,7 +4,7 @@
 
 <h1 align="center">Cyanide</h1>
 
-**By [@zeroxjf](https://github.com/zeroxjf)** — an iOS tweak runner built on top of the DarkSword kernel r/w primitive.
+**By [@zeroxjf](https://github.com/zeroxjf) and [@d1y](https://x.com/chenhonzhou)** — an iOS tweak runner built on top of the DarkSword kernel r/w primitive.
 
 Cyanide is a fork of [`wh1te4ever/darksword-kexploit-fun`](https://github.com/wh1te4ever/darksword-kexploit-fun)
 for iOS kernel research. It wraps the native DarkSword kernel stages in an
@@ -12,38 +12,35 @@ Objective-C iOS app, restructures the UI as an Installer/Settings split, and
 adds a few reliability fixes for repeated local testing. It does not ship
 the browser-delivered WebKit/dyld parts of the original DarkSword chain.
 
--------------------
-
 ## Fork Notice
 
-I forked from [`zeroxjf/cyanide`](https://github.com/zeroxjf/cyanide) starting at commit [e2f26d48e3b71d5a685ef30c3730ccb2b5d2d25a](https://github.com/zeroxjf/cyanide/tree/e2f26d48e3b71d5a685ef30c3730ccb2b5d2d25a)
+This is [`d1y/cyanide-ios`](https://github.com/d1y/cyanide-ios), a fork of
+[`zeroxjf/cyanide`](https://github.com/zeroxjf/cyanide).
 
-Then added and adjusted a set of
-my own tweaks and UI/DX changes on top of the original project.
-
-Tweaks added in this fork:
-
-- **NSBar**: compact network-speed pill with selectable status-bar positions.
-- **NiceBar Lite**: NiceBar-style status labels with configurable slots for
-  custom text, device stats, time/date, lunar date, traffic, and weather.
-- **SnowBoard Lite**: SnowBoard-style icon theme library with built-in iOS 6
-  theme, local folder/.zip/.deb import, URL import, and online theme downloads.
-- **LiveWP**: MP4/MOV/M4V video wallpaper for the lock screen and home screen.
-- **App Switcher Grid**: grid-style app switcher for this session.
-
-
-Links:
-
-- https://x.com/chenhonzhou/status/2061819860196475023
-- https://t.me/ios_cyanide
-
--------------------
+Differences from upstream:
+- All original upstream tweaks included and kept in sync
+- Adds **NSBar**, **NiceBar Lite**, **SnowBoard Lite**, **LiveWP**,
+  and **App Switcher Grid**
+- Removed closed-source/Patreon-gated tweaks (Notification Island,
+  IPA Decryptor, Dynamic Stage Lite, FastLockX Lite)
+- No Patreon authentication — all tweaks are free and open-source
+- Categories aligned with upstream's Sources tab organization
 
 ## Install
 
-Open this page on your iPhone/iPad and tap one of the buttons below.
+Open this page on your iPhone/iPad and tap the button below.
 
-[![](https://github.com/CelloSerenity/altdirect/blob/main/assets/png/Download_Blue.png?raw=true)](https://github.com/zeroxjf/cyanide/releases/latest)
+<p align="center">
+  <a href="https://github.com/d1y/cyanide-ios/releases/latest" target="_blank">
+    <img src="https://github.com/CelloSerenity/altdirect/blob/main/assets/png/Download_Blue.png?raw=true" alt="Download .ipa" width="160">
+  </a>
+</p>
+
+## Feedback
+
+- [Report a bug](https://github.com/d1y/cyanide-ios/issues/new)
+- [Request a feature](https://github.com/d1y/cyanide-ios/issues/new)
+- [Telegram group](https://t.me/ios_cyanide) for setup help and discussion
 
 ## Tweaks
 
@@ -54,54 +51,64 @@ SpringBoard and related daemons to break things on other releases.
 
 - **StatBar**: battery temperature and free-RAM overlay anchored to the
   SpringBoard status bar, with optional C/F and network-speed display.
+- **NSBar**: compact live download/upload speed overlay for the status bar,
+  with selectable corner/center positions. Ported by d1y.
+- **NiceBar Lite**: configurable status-bar-adjacent labels for custom text,
+  date/time formats, battery, memory, traffic, uptime, IP address, disk,
+  thermal state, and other live readouts. Ported by d1y.
 
-### Home Screen Layout
+### Home Screen
 
 - **SBCustomizer**: dock icon count, home-screen columns/rows, and hidden icon
-  labels. Native port of the lightsaber sbcustomizer payload.
+  labels.
 - **Home Layout Extras**: extra padding around the home grid and dock, plus
   per-icon scale for home and dock icons. Stacks on top of SBCustomizer.
+- **Gravity Lite**: core port of Julio Verne's classic Gravity tweak. Applies
+  UIDynamicAnimator physics to home-screen and dock icons — gravity, collisions,
+  bounce, friction, accelerometer steering, shake pulses, and an explosion
+  button.
+- **Hide Home Bar**: zeros the home indicator asset page to hide the bottom
+  bar. Respring to apply; separate Restore action.
 
-### Performance
+### System
 
 - **Powercuff**: CPU/GPU underclocking through simulated `thermalmonitord`
   pressure levels (off, nominal, light, moderate, heavy). Lasts until reboot.
   Port of [`rpetrich/Powercuff`](https://github.com/rpetrich/Powercuff).
+- **Watch Pairing Override**: edits the watchOS pairing range stored on the
+  iPhone so you can pair a newer Apple Watch or revive an older one.
+- **Call Recording Sound**: replaces the CallServices disclosure audio files
+  with silent payloads. Separate Silence and Restore actions.
+- **Location Simulator**: drives Apple's CoreLocation simulation path from a
+  RemoteCall host process and sets a static target coordinate.
+- **Disable OTA Updates**: toggles the launchd OTA `disabled.plist` to block or
+  unblock update prompts. Persists across reboots.
 
-### SpringBoard Tweaks
+### SpringBoard
 
-Ported from [`kolbicz/DarkSword-Tweaks`](https://github.com/kolbicz/DarkSword-Tweaks):
-
+- **Axon Lite**: groups Notification Center requests by app with a SpringBoard
+  overlay and dedups duplicates while the RemoteCall session is alive.
+- **App Switcher Grid**: grid-style app switcher for this RemoteCall session.
+- **QuickLoader**: executes user-selected `.js` files via RemoteCall bridge.
 - **Disable App Library**: removes the App Library page past the last home screen.
 - **Disable Icon Fly-In**: skips the spring-in animation when icons appear.
 - **Zero Wake Animation**: snaps the display on instantly when waking.
 - **Zero Backlight Fade**: instant lock/unlock backlight.
 - **Double-Tap to Lock**: lock the device with a wallpaper double-tap.
+- **Drag Coefficient**: custom SpringBoard animation speed multiplier.
 
-### System Updates
+### Theming
 
-- **Disable OTA Updates**: toggles the launchd OTA `disabled.plist` to block or
-  unblock update prompts. Persists across reboots.
-
-### Beta
-
-> ⚠︎ Work in progress — these work but may change or need re-applying between builds.
-
-- **Gravity Lite**: core port of Julio Verne's classic Gravity tweak. Applies
-  UIDynamicAnimator physics to home-screen and dock icons — gravity, collisions,
-  bounce, friction, accelerometer steering, shake pulses, and an explosion
-  button. Use Restore Icon Layout if icons stay displaced after deactivating.
-- **Axon Lite**: groups Notification Center requests by app with a SpringBoard
-  overlay and dedups duplicates while the RemoteCall session is alive.
 - **Cyanide Themer**: per-bundle icon theme engine. Walks SpringBoard's
   SBIconView hierarchy and swaps each icon's image with a PNG matched on bundle
-  ID. Ships with iOS 6 Theme; also accepts a custom folder of `<bundleID>.png`
-  files or a binary plist. Pick a theme in Settings before running.
-- **Watch Pairing Override**: edits the watchOS pairing range stored on the
-  iPhone so you can pair a newer Apple Watch or revive an older one. Persists
-  across reboots; respring before pairing.
+  ID. Ships with iOS 6 Theme.
+- **SnowBoard Lite**: imports SnowBoard/IconBundles-style theme folders or
+  archives into Cyanide's local theme library, then applies the selected theme.
+  Ported by d1y.
+- **LiveWP**: plays a selected MP4/MOV/M4V video as wallpaper behind the lock
+  screen and home screen. Ported by d1y.
 
-### Experimental
+### In Development
 
 > ⚠︎ Unstable or in-development — require Experimental Tweaks to be enabled in Settings.
 
@@ -110,6 +117,19 @@ Ported from [`kolbicz/DarkSword-Tweaks`](https://github.com/kolbicz/DarkSword-Tw
 - **TypeBanner**: shows a pill banner below the Dynamic Island when the active
   Messages conversation shows a typing indicator. Detection fires only while
   Messages.app is running.
+
+## JavaScript Tweaks
+
+Cyanide includes two JavaScript tweak runners contributed by Iggy05:
+
+- **QuickLoader** imports a local `.js` file from Files and exposes declared
+  `@param` values as settings rows.
+- **RepoTweaks Store** imports HTTPS JSON repositories and downloads selected
+  JavaScript tweaks from those sources. Cyanide seeds the zeroxjf source at
+  `https://zeroxjf.github.io/cyanide-repotweaks.json` by default.
+
+Only run scripts and repositories you trust; JavaScript tweaks can call Cyanide
+RemoteCall helpers and may destabilize SpringBoard if the script is buggy.
 
 ## Supported Targets
 
@@ -143,7 +163,9 @@ iOS/iPadOS 18.7.2 and 26.1. Later builds are outside this kernel exploit window.
 
 - [`opa334`](https://github.com/opa334): original [`darksword-kexploit`](https://github.com/opa334/darksword-kexploit), ChOma, and XPF — the kernel r/w primitive Cyanide is built on.
 - [`wh1te4ever`](https://github.com/wh1te4ever): [`kfun` / `darksword-kexploit-fun`](https://github.com/wh1te4ever/darksword-kexploit-fun) — the RemoteCall implementation that lets a sideloaded app apply tweaks inside SpringBoard. Cyanide is a fork of this project.
-- [`rooootdev`](https://github.com/rooootdev): working kexploit behavior used to stabilize this fork.
+- [`zeroxjf`](https://github.com/zeroxjf): upstream [`cyanide`](https://github.com/zeroxjf/cyanide) — the main project this fork is based on.
+- [`d1y`](https://x.com/chenhonzhou): NSBar, NiceBar Lite, SnowBoard Lite, LiveWP, App Switcher Grid, and this fork's ongoing maintenance.
+- [`rooootdev`](https://github.com/rooootdev): working kexploit behavior used to stabilize this fork, and the App Switcher Grid RemoteCall approach.
 - [`neonmodder123`](https://github.com/neonmodder123): Web Respring method.
 - [`kolbicz`](https://github.com/kolbicz): OTA Disabler, SpringBoard tweaks, and
   the RemoteCall/CLSimulationManager GPS spoofer prototype used as the starting
@@ -156,7 +178,10 @@ iOS/iPadOS 18.7.2 and 26.1. Later builds are outside this kernel exploit window.
 - `@Little_34306`: credited by the original call-recording projects for the
   Disable Call Recording concept.
 - [`rpetrich`](https://github.com/rpetrich): Powercuff.
-- [`tomt000`](https://github.com/tomt000): [Dynamic Stage](https://havoc.app/package/dynamicstage) — the original Stage Manager-for-iPhone tweak whose split-view + scene-hosting design Dynamic Stage Lite re-implements over RemoteCall.
+- [Julio Verne](https://github.com/julioverne): the original [Gravity](https://github.com/julioverne/Gravity) tweak that Gravity Lite is a core port of.
+- [`tomt000`](https://github.com/tomt000): [Dynamic Stage](https://havoc.app/package/dynamicstage) — the original Stage Manager-for-iPhone tweak.
+- [`Iggy05`](https://github.com/Iggy05): QuickLoader and RepoTweaks JavaScript runners, and QuickLoader standalone mode.
+- [`C4ndyF1sh` / `jailbreakdotparty`](https://github.com/jailbreakdotparty): original home bar zeroing technique.
 
 ### UI inspiration
 
@@ -190,17 +215,7 @@ xcodebuild \
 
 ## License
 
-> https://github.com/zeroxjf/cyanide
+This repository is licensed under **AGPL-3.0**. See `LICENSE`.
 
-The open-source portion of this repository — everything outside the
-`Cyanide/tweaks/private/` submodule — is licensed under **AGPL-3.0**.
-See `LICENSE`.
-
-The `Cyanide/tweaks/private/` submodule points at a separate private
-repository containing the closed-source experimental tweak
-implementations. Those files are
-**All Rights Reserved**, distributed in compiled form only inside
-official Cyanide releases, and gated to active Patreon supporters at the
-Member tier or above. Public clones won't be able to fetch the
-submodule, and the experimental tweaks will be absent from local builds
-unless you re-implement them.
+All tweaks in this fork are open-source and free to use, modify, and distribute
+under the AGPL-3.0 terms. No Patreon, no gated features, no private submodule.

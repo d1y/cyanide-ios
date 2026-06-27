@@ -37,6 +37,11 @@ bool themer_force_repaint_cached_views_in_session(void);
 // Re-pin only dynamic icons (Clock/Calendar). This is intentionally narrower
 // than a cached repaint so wake/unlock repairs don't touch normal app icons.
 bool themer_repaint_dynamic_cached_views_in_session(void);
+
+// Repaint visible icon views from the active theme data. This is heavier than
+// dynamic-only repair and is meant for initial/event-triggered SnowBoard Lite
+// repairs so newly visible pages can lazily pick up their themed images.
+bool themer_repaint_visible_theme_views_in_session(void);
 #endif
 
 // Release the in-SB UIImage cache. SB will re-render native icons on its

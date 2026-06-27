@@ -604,18 +604,20 @@ static bool gl_view_is_legacy_gravity_overlay(uint64_t view, uint64_t uiViewCls)
 
 static int gl_cleanup_gravity_overlays_in_window(uint64_t window, uint64_t uiViewCls)
 {
+    (void)uiViewCls;
     uint64_t subviews = gl_subviews(window);
     uint64_t count = gl_array_count(subviews);
     if (count > 512) count = 512;
+
+    uint64_t selTag = r_sel("tag");
+    if (!selTag) return 0;
 
     int removed = 0;
     for (uint64_t i = 0; i < count; i++) {
         uint64_t view = gl_array_object(subviews, i);
         if (!r_is_objc_ptr(view)) continue;
 
-        bool marked = gl_get_integer(view, "tag") == kGravityLiteOverlayTag;
-        bool legacy = !marked && gl_view_is_legacy_gravity_overlay(view, uiViewCls);
-        if (!marked && !legacy) continue;
+        if (r_msg(view, selTag, 0, 0, 0, 0) != kGravityLiteOverlayTag) continue;
 
         r_msg2_main(view, "removeFromSuperview", 0, 0, 0, 0);
         removed++;
@@ -1486,10 +1488,11 @@ bool gravitylite_apply_in_session(GravityLiteConfig config)
     }
     int iosMajor = gl_remote_ios_major();
     bool ios26Detected = iosMajor >= 26;
-    bool useIOS26Path = ios26Detected;
+    bool ios17Detected = iosMajor == 17;
+    bool useLiveIconPath = ios26Detected || ios17Detected;
     printf("[GRAVITY] Using iOS %d %s path.\n",
            iosMajor > 0 ? iosMajor : 0,
-           ios26Detected
+           useLiveIconPath
                ? "live icon"
                : "snapshot");
     printf("[GRAVITY] Resolving SpringBoard icon lists...\n");
@@ -1509,7 +1512,7 @@ bool gravitylite_apply_in_session(GravityLiteConfig config)
     bool homeBuilt = false;
     bool dockBuilt = false;
 
-    if (useIOS26Path) {
+    if (useLiveIconPath) {
         uint64_t listViewCls = r_class("SBIconListView");
         if (!r_is_objc_ptr(listViewCls)) {
             gl_release(groups);
@@ -1601,14 +1604,14 @@ bool gravitylite_apply_in_session(GravityLiteConfig config)
     bool homeListResolved = false;
     bool homeCaptureLogged = false;
     for (int attempt = 0; attempt < 12 && !homeBuilt; attempt++) {
-        currentListView = gl_find_home_icon_list_view(ctrl, mgr, iconViewCls, useIOS26Path);
+        currentListView = gl_find_home_icon_list_view(ctrl, mgr, iconViewCls, false);
         if (r_is_objc_ptr(currentListView)) {
             homeListResolved = true;
             if (!homeCaptureLogged) {
                 printf("[GRAVITY] Capturing home screen icon snapshots...\n");
                 homeCaptureLogged = true;
             }
-            if (gl_build_group(groups, currentListView, iconViewCls, config, false, useIOS26Path)) {
+            if (gl_build_group(groups, currentListView, iconViewCls, config, false, false)) {
                 built++;
                 homeBuilt = true;
                 break;
@@ -1621,7 +1624,7 @@ bool gravitylite_apply_in_session(GravityLiteConfig config)
     if (!homeBuilt) {
         printf("[GRAVITY] Home screen icon list %s on %s path.\n",
                homeListResolved ? "was found, but could not be captured" : "was not found",
-               useIOS26Path ? "live icon" : "snapshot");
+               "snapshot");
         gl_release(groups);
         gl_release(state);
         return false;
@@ -1629,10 +1632,10 @@ bool gravitylite_apply_in_session(GravityLiteConfig config)
 
     if (config.includeDock) {
         printf("[GRAVITY] Resolving dock icon list...\n");
-        uint64_t dockListView = gl_dock_list_view_for_path(ctrl, mgr, useIOS26Path);
+        uint64_t dockListView = gl_dock_list_view_for_path(ctrl, mgr, false);
         if (r_is_objc_ptr(dockListView)) {
             printf("[GRAVITY] Capturing dock icon snapshots...\n");
-            if (gl_build_group(groups, dockListView, iconViewCls, config, true, useIOS26Path)) {
+            if (gl_build_group(groups, dockListView, iconViewCls, config, true, false)) {
                 built++;
                 dockBuilt = true;
             }

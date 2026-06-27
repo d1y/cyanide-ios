@@ -19,4 +19,7 @@ int sb_collect_views(uint64_t root, uint64_t klass, uint64_t *out, int cap);
 // returns empty) and collects views of `klass` across all of them.
 int sb_collect_views_in_windows(uint64_t klass, uint64_t *out, int cap);
 
+// Bridge-only variant: BFS via the vphone bridge using a class name string.
+int sb_collect_views_in_windows_by_name(const char *className, uint64_t *out, int cap);
+
 #endif /* sb_walk_h */

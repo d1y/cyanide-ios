@@ -6,6 +6,7 @@
 #import "remote_objc.h"
 #import "../LogTextView.h"
 #import "../TaskRop/RemoteCall.h"
+#import "../kexploit/kexploit_opa334.h"
 #import "../kexploit/krw.h"
 #import "../kexploit/kutils.h"
 #import "../kexploit/offsets.h"
@@ -192,6 +193,12 @@ bool nano_registry_load(nano_registry_values *out_values, bool *out_present)
 
 bool nano_registry_apply(const nano_registry_values *values)
 {
+    if (!kexploit_krw_ready()) {
+        printf("[NANO] refusing apply: KRW is not active/recovered\n");
+        log_user("[NANO] Failed: kernel recovery is not active. Run the chain first.\n");
+        return false;
+    }
+
     if (!values) return false;
 
     if (values->min_pairing > values->max_pairing
@@ -229,6 +236,12 @@ bool nano_registry_apply(const nano_registry_values *values)
 
 bool nano_registry_clear(void)
 {
+    if (!kexploit_krw_ready()) {
+        printf("[NANO] refusing clear: KRW is not active/recovered\n");
+        log_user("[NANO] Failed: kernel recovery is not active. Run the chain first.\n");
+        return false;
+    }
+
     if (!nano_registry_prepare_sandbox()) return false;
 
     BOOL existed = NO;

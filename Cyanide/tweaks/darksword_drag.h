@@ -9,4 +9,4 @@
 
 bool darksword_drag_coefficient_apply(double coefficient);
 
-#endif /* darksword_drag_h */
+#endif

@@ -6,6 +6,8 @@
 #import "PackageQueue.h"
 #import "PackageCatalog.h"
 #import "../SettingsViewController.h"
+#import "../tweaks/QuickLoader.h"
+#import "../tweaks/RepoTweaks.h"
 
 NSString * const PackageQueueDidChangeNotification = @"PackageQueueDidChangeNotification";
 
@@ -14,21 +16,71 @@ NSString * const PackageQueueDidChangeNotification = @"PackageQueueDidChangeNoti
 @property (nonatomic, strong) NSMutableArray<Package *> *uninstalls;
 @end
 
-static BOOL PackageRequiresThemerTheme(Package *package)
+static BOOL PackageIsThemer(Package *package)
 {
-    return [package.identifier isEqualToString:@"com.darksword.themer"] ||
-           [package.identifier isEqualToString:@"com.darksword.snowboardlite"];
+    return [package.identifier isEqualToString:@"com.darksword.themer"];
+}
+
+static BOOL PackageIsSnowBoardLite(Package *package)
+{
+    return [package.identifier isEqualToString:@"com.darksword.snowboardlite"];
+}
+
+static NSString *PackageMissingThemeReason(Package *package)
+{
+    if (PackageIsThemer(package) && !settings_themer_has_selected_theme()) {
+        return @"Icon Theme Engine needs a selected theme before it can be activated. Open its settings and choose a theme first.";
+    }
+    if (PackageIsSnowBoardLite(package) && !settings_snowboardlite_has_selected_theme()) {
+        return @"SnowBoard Lite needs a selected theme before it can be activated. Open SnowBoard Lite settings and choose iOS 6 Theme or import a SnowBoard/IconBundles theme first.";
+    }
+    return nil;
 }
 
 static BOOL PackageCanQueueInstall(Package *package)
 {
-    if ([package.identifier isEqualToString:@"com.darksword.themer"]) {
-        return settings_themer_has_selected_theme();
+    if (package.kind == PackageInstallKindDirectTool) return NO;
+    if (package.installDisabledReason.length > 0) return NO;
+    return PackageMissingThemeReason(package).length == 0;
+}
+
+static BOOL PackageEnabledKeyIsRepoDriven(NSString *enabledKey)
+{
+    if (enabledKey.length == 0) return NO;
+    if ([enabledKey isEqualToString:kSettingsQuickLoaderEnabled]) {
+        return quickloader_is_driven_by_repo_tweak();
     }
-    if ([package.identifier isEqualToString:@"com.darksword.snowboardlite"]) {
-        return settings_snowboardlite_has_selected_theme();
+
+    NSString *repoTweakID = nil;
+    if ([enabledKey isEqualToString:kSettingsSBCEnabled]) {
+        repoTweakID = @"lightsaber.sbcustomizer";
+    } else if ([enabledKey isEqualToString:kSettingsStatBarEnabled]) {
+        repoTweakID = @"lightsaber.statbar";
+    } else if ([enabledKey isEqualToString:kSettingsPowercuffEnabled]) {
+        repoTweakID = @"lightsaber.powercuff";
     }
-    return YES;
+    if (repoTweakID.length == 0) return NO;
+
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    id rawURLs = [d objectForKey:@"RepoTweaksURLs"];
+    if (![rawURLs isKindOfClass:NSArray.class]) return NO;
+    for (id value in (NSArray *)rawURLs) {
+        if (![value isKindOfClass:NSString.class]) continue;
+        if ([d stringForKey:repotweaks_installed_version_key((NSString *)value, repoTweakID)].length > 0) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static BOOL PackageShouldAutoQueueForApply(Package *package)
+{
+    if (package.kind == PackageInstallKindRepoTweak) return NO;
+    if (package.kind == PackageInstallKindToggle &&
+        PackageEnabledKeyIsRepoDriven(package.enabledKey)) {
+        return NO;
+    }
+    return package.isQueuedForApply;
 }
 
 @implementation PackageQueue
@@ -53,27 +105,64 @@ static BOOL PackageCanQueueInstall(Package *package)
 - (NSArray<Package *> *)queuedInstalls
 {
     NSMutableArray<Package *> *out = [self.installs mutableCopy];
+    if ([self hasExplicitHideHomeBarQueued]) {
+        NSMutableArray<Package *> *onlyHomeBar = [NSMutableArray array];
+        for (Package *p in out) {
+            if (p.kind == PackageInstallKindHideHomeBar) [onlyHomeBar addObject:p];
+        }
+        return onlyHomeBar;
+    }
+
     for (Package *p in [PackageCatalog allPackages]) {
         if (p.isInstallDisabled) continue;
         if (!PackageCanQueueInstall(p)) continue;
-        if (!p.isQueuedForApply) continue;
+        if (!PackageShouldAutoQueueForApply(p)) continue;
         if ([self packageInArray:out matching:p]) continue;
         if ([self packageInArray:self.uninstalls matching:p]) continue;
         [out addObject:p];
     }
+
+    BOOL hasRepoTweakUsingQL = NO;
+    for (Package *p in out) {
+        if (p.kind == PackageInstallKindRepoTweak && p.repoTweakUsesQuickLoader) {
+            hasRepoTweakUsingQL = YES;
+            break;
+        }
+    }
+    if (hasRepoTweakUsingQL) {
+        NSMutableArray<Package *> *filtered = [NSMutableArray arrayWithCapacity:out.count];
+        for (Package *p in out) {
+            if ([p.enabledKey isEqualToString:kSettingsQuickLoaderEnabled]) continue;
+            [filtered addObject:p];
+        }
+        return filtered;
+    }
     return out;
 }
 
-- (NSArray<Package *> *)queuedUninstalls { return [self.uninstalls copy]; }
+- (NSArray<Package *> *)queuedUninstalls
+{
+    if (![self hasExplicitHideHomeBarQueued]) return [self.uninstalls copy];
+
+    NSMutableArray<Package *> *onlyHomeBar = [NSMutableArray array];
+    for (Package *p in self.uninstalls) {
+        if (p.kind == PackageInstallKindHideHomeBar) [onlyHomeBar addObject:p];
+    }
+    return onlyHomeBar;
+}
 - (NSInteger)pendingCount                { return (NSInteger)(self.queuedInstalls.count + self.queuedUninstalls.count); }
 
 - (PackageQueueIntent)intentForPackage:(Package *)package
 {
+    if (package.kind == PackageInstallKindDirectTool) return PackageQueueIntentNone;
+    BOOL hideHomeBarQueued = [self hasExplicitHideHomeBarQueued];
+    BOOL isHideHomeBar = package.kind == PackageInstallKindHideHomeBar;
+    if (hideHomeBarQueued && !isHideHomeBar) return PackageQueueIntentNone;
     if (!package.isInstalled && !PackageCanQueueInstall(package)) return PackageQueueIntentNone;
     if ([self packageInArray:self.installs matching:package])   return PackageQueueIntentInstall;
     if ([self packageInArray:self.uninstalls matching:package]) return PackageQueueIntentUninstall;
     if (package.isInstallDisabled) return PackageQueueIntentNone;
-    if (package.isQueuedForApply) return PackageQueueIntentInstall;
+    if (PackageShouldAutoQueueForApply(package)) return PackageQueueIntentInstall;
     return PackageQueueIntentNone;
 }
 
@@ -85,6 +174,105 @@ static BOOL PackageCanQueueInstall(Package *package)
     return nil;
 }
 
+- (BOOL)hasExplicitHideHomeBarQueued
+{
+    for (Package *p in self.installs) {
+        if (p.kind == PackageInstallKindHideHomeBar) return YES;
+    }
+    for (Package *p in self.uninstalls) {
+        if (p.kind == PackageInstallKindHideHomeBar) return YES;
+    }
+    return NO;
+}
+
+- (NSInteger)pendingCountExcludingPackage:(Package *)package
+{
+    NSInteger count = 0;
+    for (Package *p in self.queuedInstalls) {
+        if (package && [p.identifier isEqualToString:package.identifier]) continue;
+        count++;
+    }
+    for (Package *p in self.queuedUninstalls) {
+        if (package && [p.identifier isEqualToString:package.identifier]) continue;
+        count++;
+    }
+    return count;
+}
+
+- (BOOL)hasQueuedHideHomeBarIntentExcludingPackage:(Package *)package
+{
+    for (Package *p in self.installs) {
+        if (package && [p.identifier isEqualToString:package.identifier]) continue;
+        if (p.kind == PackageInstallKindHideHomeBar) return YES;
+    }
+    for (Package *p in self.uninstalls) {
+        if (package && [p.identifier isEqualToString:package.identifier]) continue;
+        if (p.kind == PackageInstallKindHideHomeBar) return YES;
+    }
+    return NO;
+}
+
+- (BOOL)hasQueuedRepoTweakInstallExcludingPackage:(Package *)package
+{
+    for (Package *p in self.queuedInstalls) {
+        if (package && [p.identifier isEqualToString:package.identifier]) continue;
+        if (p.kind == PackageInstallKindRepoTweak && p.repoTweakUsesQuickLoader) return YES;
+    }
+    return NO;
+}
+
+- (BOOL)canQueueIntent:(PackageQueueIntent)intent
+            forPackage:(Package *)package
+                reason:(NSString * _Nullable * _Nullable)reason
+{
+    if (reason) *reason = nil;
+    if (!package) return NO;
+    if (intent == PackageQueueIntentNone) return YES;
+
+    if (intent == PackageQueueIntentInstall) {
+        if (package.isInstallDisabled) {
+            if (reason) {
+                *reason = package.installDisabledReason.length
+                    ? package.installDisabledReason
+                    : @"This package is not available on this iOS version.";
+            }
+            return NO;
+        }
+        NSString *themeReason = PackageMissingThemeReason(package);
+        if (themeReason.length > 0) {
+            if (reason) *reason = themeReason;
+            return NO;
+        }
+    }
+
+    BOOL isHideHomeBar = package.kind == PackageInstallKindHideHomeBar;
+    if (isHideHomeBar && [self pendingCountExcludingPackage:package] > 0) {
+        if (reason) {
+            *reason = @"Hide Home Bar changes the system home-indicator asset and needs a respring right after. Clear the current queue, run Hide Home Bar by itself, respring, then queue your other tweaks.";
+        }
+        return NO;
+    }
+
+    if (!isHideHomeBar && [self hasQueuedHideHomeBarIntentExcludingPackage:package]) {
+        if (reason) {
+            *reason = @"Hide Home Bar is already waiting in the queue and must run by itself. Apply or remove Hide Home Bar first, then queue other tweaks after the respring.";
+        }
+        return NO;
+    }
+
+    if (intent == PackageQueueIntentInstall &&
+        package.kind == PackageInstallKindRepoTweak &&
+        package.repoTweakUsesQuickLoader &&
+        [self hasQueuedRepoTweakInstallExcludingPackage:package]) {
+        if (reason) {
+            *reason = @"QuickLoader installs one repo tweak at a time. Apply or remove the currently queued repo tweak first.";
+        }
+        return NO;
+    }
+
+    return YES;
+}
+
 - (void)toggleForPackage:(Package *)package
 {
     PackageQueueIntent current = [self intentForPackage:package];
@@ -94,6 +282,9 @@ static BOOL PackageCanQueueInstall(Package *package)
     }
     if (package.isInstallDisabled && !package.isInstalled) return;
     if (!package.isInstalled && !PackageCanQueueInstall(package)) return;
+    PackageQueueIntent nextIntent = package.isInstalled ? PackageQueueIntentUninstall : PackageQueueIntentInstall;
+    if (![self canQueueIntent:nextIntent forPackage:package reason:nil]) return;
+
     if (package.isInstalled) {
         [self.uninstalls addObject:package];
     } else {
@@ -104,6 +295,7 @@ static BOOL PackageCanQueueInstall(Package *package)
 
 - (void)queueIntent:(PackageQueueIntent)intent forPackage:(Package *)package
 {
+    if (![self canQueueIntent:intent forPackage:package reason:nil]) return;
     [self removePackage:package];
     if (intent == PackageQueueIntentInstall) {
         if (!PackageCanQueueInstall(package)) return;
@@ -116,11 +308,18 @@ static BOOL PackageCanQueueInstall(Package *package)
 
 - (void)removePackage:(Package *)package
 {
+    BOOL hadExplicitIntent = NO;
     Package *match = [self packageInArray:self.installs matching:package];
-    if (match) [self.installs removeObject:match];
+    if (match) {
+        hadExplicitIntent = YES;
+        [self.installs removeObject:match];
+    }
     match = [self packageInArray:self.uninstalls matching:package];
-    if (match) [self.uninstalls removeObject:match];
-    if (package.isQueuedForApply) {
+    if (match) {
+        hadExplicitIntent = YES;
+        [self.uninstalls removeObject:match];
+    }
+    if (!hadExplicitIntent && PackageShouldAutoQueueForApply(package)) {
         [package applyCommittedState:NO];
     }
     [self notifyChange];
@@ -149,7 +348,8 @@ static BOOL PackageCanQueueInstall(Package *package)
     NSArray<Package *> *toUninstall = self.queuedUninstalls;
 
     // Split packages into "stateful" (toggle: just flips an NSUserDefaults
-    // BOOL — fast, safe to call on main) and "heavy" (OTA / NanoRegistry —
+    // BOOL — fast, safe to call on main) and "heavy" (OTA / NanoRegistry /
+    // repo tweaks — repo installs force-refresh scripts without URL caches —
     // run kexploit + plist write, blocking). Apply stateful inline so
     // settings_run_actions sees the right flags; dispatch heavy to a
     // background queue so the InstallProgressViewController's log can
@@ -162,6 +362,9 @@ static BOOL PackageCanQueueInstall(Package *package)
         if (pkg.kind == PackageInstallKindToggle) {
             needsRunActions = YES;
             [pkg applyCommittedState:YES];
+        } else if (pkg.kind == PackageInstallKindRepoTweak) {
+            needsRunActions = YES;
+            [heavyInstalls addObject:pkg];
         } else {
             [heavyInstalls addObject:pkg];
         }
@@ -170,6 +373,9 @@ static BOOL PackageCanQueueInstall(Package *package)
         if (pkg.kind == PackageInstallKindToggle) {
             needsRunActions = YES;
             [pkg applyCommittedState:NO];
+        } else if (pkg.kind == PackageInstallKindRepoTweak) {
+            needsRunActions = YES;
+            [heavyUninstalls addObject:pkg];
         } else {
             [heavyUninstalls addObject:pkg];
         }

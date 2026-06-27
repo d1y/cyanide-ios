@@ -761,6 +761,12 @@ finish:
 
 bool darksword_ota_set_disabled(bool disabled)
 {
+    if (!kexploit_krw_ready()) {
+        printf("[OTA] refusing plist edit: KRW is not active/recovered\n");
+        log_user("[OTA] Failed: kernel recovery is not active. Run the chain first.\n");
+        return false;
+    }
+
     if (disabled && kexploit_krw_ready()) {
         bool ok = ota_set_local_with_launchd_krw(disabled);
         printf("[OTA] === DISABLE OTA result=%d reboot/userspace restart required ===\n", ok);

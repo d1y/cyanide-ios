@@ -41,6 +41,7 @@ extern NSString * const kSettingsStatBarCelsius;
 extern NSString * const kSettingsStatBarShowNet;
 extern NSString * const kSettingsStatBarShowCPU;
 extern NSString * const kSettingsStatBarShowLabels;
+extern NSString * const kSettingsStatBarNetworkOnly;
 extern NSString * const kSettingsStatBarRefreshRateSec;
 
 extern NSString * const kSettingsNSBarEnabled;
@@ -55,7 +56,6 @@ extern NSString * const kSettingsRSSIDisplayCell;
 extern NSString * const kSettingsAxonLiteEnabled;
 
 extern NSString * const kSettingsTypeBannerEnabled;
-
 extern NSString * const kSettingsAppSwitcherGridEnabled;
 
 extern NSString * const kSettingsGravityLiteEnabled;
@@ -65,6 +65,12 @@ extern NSString * const kSettingsGravityLiteBouncePct;
 extern NSString * const kSettingsGravityLiteFrictionPct;
 extern NSString * const kSettingsGravityLiteResistancePct;
 extern NSString * const kSettingsGravityLiteAngularResistancePct;
+
+extern NSString * const kSettingsLocationSimLatitude;
+extern NSString * const kSettingsLocationSimLongitude;
+extern NSString * const kSettingsLocationSimAltitude;
+extern NSString * const kSettingsLocationSimHorizontalAccuracy;
+extern NSString * const kSettingsLocationSimHostProcess;
 
 extern NSString * const kSettingsThemerEnabled;
 extern NSString * const kSettingsThemerThemeID;
@@ -77,7 +83,13 @@ extern NSString * const kSettingsSnowBoardLiteSelectedThemeID;
 extern NSString * const kSettingsLiveWPEnabled;
 extern NSString * const kSettingsLiveWPVideoPath;
 
+extern NSString * const kSettingsQuickLoaderEnabled;
+
+extern NSString * const kSettingsRepoTweaksEnabled;
+
 extern NSString * const kSettingsExperimentalTweaksEnabled;
+
+extern NSString * const kSettingsLogUploadEnabled;
 
 extern NSString * const kSettingsActionsDidCompleteNotification;
 extern NSString * const kSettingsActionsDidCompleteSuccessKey;
@@ -87,6 +99,7 @@ extern NSString * const kSettingsActionsDidCompleteMessageKey;
 // applied in this app session. Cleared on launch, on cleanup, and whenever the
 // SpringBoard RemoteCall session goes away.
 BOOL settings_tweak_is_applied(NSString *key);
+void settings_mark_tweak_needs_apply(NSString *key);
 
 void settings_register_defaults(void);
 BOOL settings_device_supported(void);
@@ -104,6 +117,12 @@ NSString *settings_snowboardlite_selected_theme_display_name(void);
 // compatibility override using the four numbers currently in NSUserDefaults
 // (kSettingsNanoMaxPairing, etc.). Returns YES on success.
 BOOL settings_apply_nano_registry_now(BOOL apply);
+BOOL settings_apply_call_recording_sound_disabled(BOOL disabled);
+BOOL settings_apply_hide_home_bar_hidden(BOOL hidden);
+BOOL settings_hide_home_bar_hidden(void);
+void settings_note_hide_home_bar_respring_pending(void);
+BOOL settings_hide_home_bar_respring_pending(void);
+void settings_present_hide_home_bar_respring_prompt(UIViewController *host);
 
 void settings_run_actions(void);
 void settings_run_pending_actions(void);
@@ -130,10 +149,12 @@ void settings_application_did_become_active(void);
 // back to the Installer tab — so the install action stays one tap away
 // after customizing.
 @property (nonatomic, copy, nullable) NSString *installerReturnPackageName;
+@property (nonatomic, assign) BOOL quickLoaderStandalone;
 
 // Current values for each configurable row in a settings section.
 // Each entry: @{@"title": <label string>, @"value": <current value string>}.
 // Returns empty array when the section has no configurable rows.
 + (NSArray<NSDictionary<NSString *, NSString *> *> *)settingsSummaryForSection:(NSInteger)section;
++ (BOOL)liveWPHasSelectedVideo;
 
 @end

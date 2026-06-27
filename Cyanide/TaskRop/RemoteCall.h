@@ -76,6 +76,7 @@ void abandon_remote_call(void);
 bool remote_call_has_local_state(void);
 bool remote_call_current_success(void);
 int remote_call_current_pid(void);
+bool remote_call_uses_vphone_bridge(void);
 int remote_call_set_stable_timeout_floor_ms(int timeoutMS);
 RemoteCallInitFailure remote_call_last_init_failure(void);
 uint32_t remote_call_last_init_failure_pid(void);

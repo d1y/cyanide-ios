@@ -5,6 +5,7 @@
 
 #import "QueuePopupBar.h"
 #import "PackageQueue.h"
+#import "../SettingsViewController.h"
 
 @interface QueuePopupBar ()
 @property (nonatomic, strong) UIVisualEffectView *blurView;
@@ -30,14 +31,22 @@
 {
     self.backgroundColor = UIColor.clearColor;
     self.layer.cornerRadius = 16.0;
-    self.layer.masksToBounds = YES;
+    self.layer.cornerCurve = kCACornerCurveContinuous;
+    self.layer.masksToBounds = NO;
     self.layer.borderWidth = 0.5;
     self.layer.borderColor = [UIColor.separatorColor colorWithAlphaComponent:0.5].CGColor;
+    self.layer.shadowColor = UIColor.blackColor.CGColor;
+    self.layer.shadowOpacity = 0.12;
+    self.layer.shadowRadius = 12.0;
+    self.layer.shadowOffset = CGSizeMake(0, 4);
 
     UIBlurEffect *blur = [UIBlurEffect effectWithStyle:UIBlurEffectStyleSystemMaterial];
     UIVisualEffectView *blurView = [[UIVisualEffectView alloc] initWithEffect:blur];
     blurView.translatesAutoresizingMaskIntoConstraints = NO;
     blurView.userInteractionEnabled = NO;
+    blurView.layer.cornerRadius = 16.0;
+    blurView.layer.cornerCurve = kCACornerCurveContinuous;
+    blurView.clipsToBounds = YES;
     [self addSubview:blurView];
     self.blurView = blurView;
 
@@ -106,6 +115,10 @@
                                              selector:@selector(queueChanged:)
                                                  name:PackageQueueDidChangeNotification
                                                object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self
+                                             selector:@selector(queueChanged:)
+                                                 name:kSettingsActionsDidCompleteNotification
+                                               object:nil];
 }
 
 - (void)dealloc
@@ -127,6 +140,11 @@
 - (void)queueChanged:(NSNotification *)note
 {
     [self refreshFromQueueAnimated:YES];
+    if ([note.name isEqualToString:kSettingsActionsDidCompleteNotification]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [self refreshFromQueueAnimated:YES];
+        });
+    }
 }
 
 - (void)refreshFromQueueAnimated:(BOOL)animated
@@ -145,8 +163,8 @@
     self.titleLabel.text = (count == 1) ? @"1 pending change" : [NSString stringWithFormat:@"%ld pending changes", (long)count];
 
     NSMutableArray<NSString *> *parts = [NSMutableArray array];
-    if (installs > 0)   [parts addObject:[NSString stringWithFormat:@"%ld install", (long)installs]];
-    if (uninstalls > 0) [parts addObject:[NSString stringWithFormat:@"%ld uninstall", (long)uninstalls]];
+    if (installs > 0)   [parts addObject:[NSString stringWithFormat:@"%ld activate", (long)installs]];
+    if (uninstalls > 0) [parts addObject:[NSString stringWithFormat:@"%ld deactivate", (long)uninstalls]];
     self.subtitleLabel.text = [parts componentsJoinedByString:@" · "];
 
     [self setVisible:YES animated:animated];

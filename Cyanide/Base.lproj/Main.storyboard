@@ -63,11 +63,11 @@
             </objects>
             <point key="canvasLocation" x="8909" y="-404"/>
         </scene>
-        <!--Installer-->
+        <!--Packages-->
         <scene sceneID="InsScNav">
             <objects>
-                <navigationController id="InsNv001" userLabel="Installer" sceneMemberID="viewController">
-                    <tabBarItem key="tabBarItem" title="Installer" image="shippingbox.fill" catalog="system" id="InsTb001"/>
+                <navigationController id="InsNv001" userLabel="Packages" sceneMemberID="viewController">
+                    <tabBarItem key="tabBarItem" title="Packages" image="shippingbox.fill" catalog="system" id="InsTb001"/>
                     <navigationBar key="navigationBar" contentMode="scaleToFill" barStyle="black" id="InsNb001">
                         <rect key="frame" x="0.0" y="118" width="393" height="54"/>
                         <autoresizingMask key="autoresizingMask"/>
@@ -80,7 +80,7 @@
             </objects>
             <point key="canvasLocation" x="8079" y="-750"/>
         </scene>
-        <!--Installer-->
+        <!--Packages-->
         <scene sceneID="InsScTv">
             <objects>
                 <tableViewController id="InsTv001" customClass="PackagesViewController" sceneMemberID="viewController">
@@ -89,7 +89,7 @@
                         <autoresizingMask key="autoresizingMask" widthSizable="YES" heightSizable="YES"/>
                         <color key="backgroundColor" systemColor="systemGroupedBackgroundColor"/>
                     </tableView>
-                    <navigationItem key="navigationItem" title="Installer" id="InsNi001"/>
+                    <navigationItem key="navigationItem" title="Packages" id="InsNi001"/>
                 </tableViewController>
                 <placeholder placeholderIdentifier="IBFirstResponder" id="InsFr002" userLabel="First Responder" customClass="UIResponder" sceneMemberID="firstResponder"/>
             </objects>

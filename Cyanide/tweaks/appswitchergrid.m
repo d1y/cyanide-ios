@@ -54,7 +54,7 @@ bool appswitchergrid_apply_in_session(void)
     }
 
     uint64_t return2Imp = r_dlsym_call(R_TIMEOUT, "method_getImplementation",
-                                      dockUpdateModeMethod, 0, 0, 0, 0, 0, 0, 0);
+                                       dockUpdateModeMethod, 0, 0, 0, 0, 0, 0, 0);
     if (!return2Imp) {
         printf("[ASG] dockUpdateMode IMP unavailable\n");
         log_user("[ASG] Could not resolve the grid switcher implementation.\n");
@@ -85,7 +85,7 @@ bool appswitchergrid_apply_in_session(void)
            switcherStyleMethod, gASGOriginalSwitcherStyleImp, return2Imp, oldImp);
     ASG_DEBUG_LOG("[ASG][DEBUG] switcherStyle method=0x%llx original=0x%llx grid=0x%llx old=0x%llx\n",
                   switcherStyleMethod, gASGOriginalSwitcherStyleImp, return2Imp, oldImp);
-    log_user("[ASG] Grid App Switcher enabled for the current SpringBoard session. Respring restores stock.\n");
+    log_user("[ASG] Grid App Switcher enabled. Respring restores stock.\n");
     return true;
 }
 

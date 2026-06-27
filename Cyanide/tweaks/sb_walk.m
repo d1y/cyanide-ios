@@ -7,6 +7,13 @@
 
 #import "sb_walk.h"
 #import "remote_objc.h"
+#import "../TaskRop/RemoteCall.h"
+#import "../VPhoneDebug.h"
+
+#import <sys/socket.h>
+#import <sys/un.h>
+#import <unistd.h>
+#import <errno.h>
 
 static uint64_t sw_safe_msg(uint64_t obj, const char *selname,
                             uint64_t a, uint64_t b, uint64_t c, uint64_t d)
@@ -19,9 +26,84 @@ static uint64_t sw_safe_msg(uint64_t obj, const char *selname,
     return r_msg(obj, sel, a, b, c, d);
 }
 
+#define CY_VPHONE_BRIDGE_MAGIC 0x43595342u
+#define CY_VPHONE_BRIDGE_SOCK "/private/var/mobile/Library/Caches/com.zeroxjf.cyanide.vphone-springboard.sock"
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint32_t op;
+    uint64_t addr;
+    uint64_t size;
+    uint64_t args[8];
+    char name[128];
+} SBWBridgeReq;
+
+typedef struct __attribute__((packed)) {
+    uint32_t magic;
+    uint32_t status;
+    uint64_t result;
+    uint64_t extra;
+} SBWBridgeResp;
+
+static const char *sbw_class_name_from_ptr(uint64_t klass);
+
+static bool sbw_read_full(int fd, void *buf, size_t len) {
+    uint8_t *p = buf;
+    while (len) { ssize_t n = read(fd, p, len); if (n <= 0) { if (n < 0 && errno == EINTR) continue; return false; } p += n; len -= n; }
+    return true;
+}
+static bool sbw_write_full(int fd, const void *buf, size_t len) {
+    const uint8_t *p = buf;
+    while (len) { ssize_t n = write(fd, p, len); if (n <= 0) { if (n < 0 && errno == EINTR) continue; return false; } p += n; len -= n; }
+    return true;
+}
+
+static int sb_collect_views_via_bridge_root(uint64_t root, const char *className, uint64_t *out, int cap)
+{
+    if (!root || !className || !className[0]) return 0;
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_un sun = {0};
+    sun.sun_family = AF_UNIX;
+    strlcpy(sun.sun_path, CY_VPHONE_BRIDGE_SOCK, sizeof(sun.sun_path));
+    if (connect(fd, (struct sockaddr *)&sun, sizeof(sun)) != 0) { close(fd); return -1; }
+
+    SBWBridgeReq req = {0};
+    req.magic = CY_VPHONE_BRIDGE_MAGIC;
+    req.op = 7;
+    req.addr = root;
+    req.args[0] = (uint64_t)cap;
+    strlcpy(req.name, className, sizeof(req.name));
+
+    if (!sbw_write_full(fd, &req, sizeof(req))) { close(fd); return -1; }
+
+    SBWBridgeResp resp = {0};
+    if (!sbw_read_full(fd, &resp, sizeof(resp)) || resp.magic != CY_VPHONE_BRIDGE_MAGIC || resp.status != 0) {
+        close(fd); return -1;
+    }
+    int found = (int)resp.result;
+    if (found > cap) found = cap;
+    if (found > 0 && resp.extra > 0) {
+        size_t readSz = (size_t)(found * sizeof(uint64_t));
+        if (readSz > resp.extra) readSz = (size_t)resp.extra;
+        if (!sbw_read_full(fd, out, readSz)) { close(fd); return -1; }
+    }
+    close(fd);
+    return found;
+}
+
 int sb_collect_views(uint64_t root, uint64_t klass, uint64_t *out, int cap)
 {
     if (!root || !klass || cap <= 0) return 0;
+
+    if (remote_call_uses_vphone_bridge()) {
+        const char *name = sbw_class_name_from_ptr(klass);
+        if (name) {
+            int n = sb_collect_views_via_bridge_root(root, name, out, cap);
+            if (n >= 0) return n;
+        }
+    }
     uint64_t selSub  = r_sel("subviews");
     uint64_t selCnt  = r_sel("count");
     uint64_t selObj  = r_sel("objectAtIndex:");
@@ -51,8 +133,83 @@ int sb_collect_views(uint64_t root, uint64_t klass, uint64_t *out, int cap)
     return found;
 }
 
+static int sb_collect_views_via_bridge(const char *className, uint64_t *out, int cap)
+{
+    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    struct sockaddr_un sun = {0};
+    sun.sun_family = AF_UNIX;
+    strlcpy(sun.sun_path, CY_VPHONE_BRIDGE_SOCK, sizeof(sun.sun_path));
+    if (connect(fd, (struct sockaddr *)&sun, sizeof(sun)) != 0) { close(fd); return -1; }
+
+    SBWBridgeReq req = {0};
+    req.magic = CY_VPHONE_BRIDGE_MAGIC;
+    req.op = 6;
+    req.args[0] = (uint64_t)cap;
+    strlcpy(req.name, className, sizeof(req.name));
+
+    if (!sbw_write_full(fd, &req, sizeof(req))) { close(fd); return -1; }
+
+    SBWBridgeResp resp = {0};
+    if (!sbw_read_full(fd, &resp, sizeof(resp)) || resp.magic != CY_VPHONE_BRIDGE_MAGIC || resp.status != 0) {
+        close(fd);
+        return -1;
+    }
+
+    int found = (int)resp.result;
+    if (found > cap) found = cap;
+    if (found > 0 && resp.extra > 0) {
+        size_t readSz = (size_t)(found * sizeof(uint64_t));
+        if (readSz > resp.extra) readSz = (size_t)resp.extra;
+        if (!sbw_read_full(fd, out, readSz)) { close(fd); return -1; }
+    }
+    close(fd);
+    return found;
+}
+
+int sb_collect_views_in_windows_by_name(const char *className, uint64_t *out, int cap)
+{
+    if (!className || !className[0]) return 0;
+    int n = sb_collect_views_via_bridge(className, out, cap);
+    if (n < 0) {
+        printf("[SB_WALK] vphone bridge sb_collect_views failed for %s\n", className);
+    }
+    if (n >= 0)
+        printf("[SB_WALK] vphone bridge sb_collect_views class=%s found=%d\n", className, n);
+    return n;
+}
+
+static uint64_t sbw_cached_SBIconListView = 0;
+static uint64_t sbw_cached_SBIconView = 0;
+
+static const char *sbw_class_name_from_ptr(uint64_t klass)
+{
+    if (klass == sbw_cached_SBIconListView && klass) return "SBIconListView";
+    if (klass == sbw_cached_SBIconView && klass) return "SBIconView";
+
+    uint64_t p = r_class("SBIconListView");
+    if (p) sbw_cached_SBIconListView = p;
+    if (p == klass) return "SBIconListView";
+
+    p = r_class("SBIconView");
+    if (p) sbw_cached_SBIconView = p;
+    if (p == klass) return "SBIconView";
+
+    return NULL;
+}
+
 int sb_collect_views_in_windows(uint64_t klass, uint64_t *out, int cap)
 {
+    if (remote_call_uses_vphone_bridge()) {
+        const char *name = sbw_class_name_from_ptr(klass);
+        if (name) {
+            int bridged = sb_collect_views_in_windows_by_name(name, out, cap);
+            if (bridged >= 0) return bridged;
+            printf("[SB_WALK] falling back to generic RemoteCall view walk for %s\n", name);
+        }
+    }
+
     uint64_t clsApp = r_class("UIApplication");
     if (!clsApp) return 0;
     uint64_t app = sw_safe_msg(clsApp, "sharedApplication", 0, 0, 0, 0);

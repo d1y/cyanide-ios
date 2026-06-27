@@ -25,6 +25,25 @@ typedef NS_ENUM(NSInteger, PackageInstallKind) {
     // compatibility keys from the Settings bundle; uninstalling clears them.
     // No live RC loop, doesn't run settings_run_actions.
     PackageInstallKindNanoRegistry = 2,
+
+    // One-shot CallServices audio replacement gated by kexploit + sandbox
+    // patch. Installing writes bundled silent disclosure sounds and stores
+    // the first originals in Cyanide's app container; uninstalling restores
+    // those backups when present.
+    PackageInstallKindCallRecordingSound = 3,
+
+    // One-shot MaterialKit asset page zero. Installing hides
+    // the home bar after respring; restoring needs a respring.
+    PackageInstallKindHideHomeBar = 4,
+
+    // Direct settings tool. It has a Settings bundle but no install queue,
+    // active state, or PackageQueue commit step.
+    PackageInstallKindDirectTool = 5,
+
+    // Dynamic package fetched from a RepoTweaks source. Known repo IDs can map
+    // to Cyanide's native tweak backends; other compatible JS snippets are
+    // imported into QuickLoader and applied through the normal run-actions path.
+    PackageInstallKindRepoTweak = 6,
 };
 
 @interface Package : NSObject
@@ -40,6 +59,12 @@ typedef NS_ENUM(NSInteger, PackageInstallKind) {
 @property (nonatomic, readonly, assign)   PackageInstallKind kind;
 @property (nonatomic, readonly, copy, nullable) NSString *enabledKey;
 @property (nonatomic, readonly, assign)   BOOL isNew;
+@property (nonatomic, readonly, copy, nullable) NSString *repoURL;
+@property (nonatomic, readonly, copy, nullable) NSString *repoTweakID;
+@property (nonatomic, readonly, copy, nullable) NSString *repoScriptURL;
+@property (nonatomic, readonly, copy, nullable) NSString *repoName;
+@property (nonatomic, readonly, copy, nullable) NSString *repoNativeEnabledKey;
+@property (nonatomic, readonly, assign) BOOL repoTweakUsesQuickLoader;
 
 // SettingsSection enum value that corresponds to this package's bundle in the
 // Settings tab. NSIntegerMax means the package has no Settings bundle
@@ -56,15 +81,19 @@ typedef NS_ENUM(NSInteger, PackageInstallKind) {
 // but cannot queue a fresh install until the reason is cleared.
 @property (nonatomic, copy, nullable) NSString *installDisabledReason;
 
-// Non-nil means the detail view shows a prominent "Known Issues" card.
-// Each string is rendered as one bullet.
-@property (nonatomic, copy, nullable) NSArray<NSString *> *knownIssues;
-
 // YES means the package is gated behind kSettingsExperimentalTweaksEnabled.
 // When the master experimental switch is off, +[PackageCatalog allPackages]
 // filters experimental packages out entirely so they don't appear in the
 // Installer list or the Settings tweak-bundle list.
 @property (nonatomic, assign) BOOL experimental;
+
+// YES means the package is only installable by the campaign creator.
+// Non-creators see the package but cannot queue it.
+@property (nonatomic, assign) BOOL creatorOnly;
+
+// Non-nil means the package detail view shows a prominent "Known Issues" card.
+// Each string is one bullet. Set in PackageCatalog.
+@property (nonatomic, copy, nullable) NSArray<NSString *> *knownIssues;
 
 @property (nonatomic, readonly, assign) BOOL isInstalled;
 @property (nonatomic, readonly, assign) BOOL isQueuedForApply;
@@ -82,11 +111,22 @@ typedef NS_ENUM(NSInteger, PackageInstallKind) {
                         enabledKey:(nullable NSString *)enabledKey
                              isNew:(BOOL)isNew NS_DESIGNATED_INITIALIZER;
 
+- (instancetype)initRepoTweakWithIdentifier:(NSString *)identifier
+                                      name:(NSString *)name
+                          shortDescription:(NSString *)shortDescription
+                                   version:(NSString *)version
+                                    author:(NSString *)author
+                                  repoName:(NSString *)repoName
+                                   repoURL:(NSString *)repoURL
+                               repoTweakID:(NSString *)repoTweakID
+                              repoScriptURL:(NSString *)repoScriptURL;
+
 - (instancetype)init NS_UNAVAILABLE;
 
 - (void)install;
 - (void)uninstall;
 - (void)applyCommittedState:(BOOL)installed;
+- (void)syncRepoTweakOptionsToNativeSettings;
 
 @end
 
